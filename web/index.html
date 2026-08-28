@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="keywords" content="HK時計,Webアプリ,ウェブアプリ,katahiromz">
+<title>HK時計</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  #ctxMenu {
+    position: fixed;
+    z-index: 1000;
+    display: none;
+    min-width: 220px;
+    background: rgba(30, 34, 44, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    padding: 6px;
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #ctxMenu .ctx-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 5px;
+    color: #fff;
+    font-size: 15px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #ctxMenu .ctx-item:hover {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  #ctxMenu .ctx-check {
+    width: 16px;
+    height: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-radius: 3px;
+    flex: 0 0 auto;
+    position: relative;
+  }
+  #ctxMenu .ctx-check.checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    width: 4px;
+    height: 8px;
+    border: solid #4dd0ff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+</style>
+</head>
+<body>
+<canvas id="clock"></canvas>
+<div id="ctxMenu">
+  <div class="ctx-item" id="ctxSoundItem">
+    <span class="ctx-check" id="ctxSoundCheck"></span>
+    <span>音声を再生する</span>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('clock');
+  const ctx = canvas.getContext('2d');
+
+  // High-DPI support
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  const PI = Math.PI;
+
+  function deg2rad(deg) {
+    return deg * PI / 180;
+  }
+
+  // Angle from 12-o'clock, clockwise
+  function handEndpoint(cx, cy, length, angleDeg) {
+    const rad = deg2rad(angleDeg - 90);
+    return {
+      x: cx + length * Math.cos(rad),
+      y: cy + length * Math.sin(rad)
+    };
+  }
+
+  function dir(angleDeg) {
+    const rad = deg2rad(angleDeg - 90);
+    return { dx: Math.cos(rad), dy: Math.sin(rad) };
+  }
+
+  function draw() {
+    const clientW = window.innerWidth;
+    const clientH = window.innerHeight;
+
+    // Diameter = shorter side
+    let diameter = Math.min(clientW, clientH);
+    let radius = diameter * 0.5;
+    const cx = clientW * 0.5;
+    const cy = clientH * 0.5;
+
+    // Slight inset
+    const inset = diameter * 0.02;
+    radius -= inset;
+    diameter = radius * 2;
+
+    // Background - soft blue vertical gradient + stripes
+    {
+      const grad = ctx.createLinearGradient(0, 0, 0, clientH);
+      grad.addColorStop(0, 'rgb(30, 50, 120)');
+      grad.addColorStop(0.5, 'rgb(80, 190, 230)');
+      grad.addColorStop(1, 'rgb(30, 50, 120)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, clientW, clientH);
+
+      // Subtle vertical stripes
+      const stripeStep = 0.06 * radius;
+      const lineWidth = 0.02 * radius;
+      for (let x = 0; x < clientW; x += stripeStep) {
+        const stripeGrad = ctx.createLinearGradient(x, 0, x, clientH);
+        stripeGrad.addColorStop(0, 'rgb(94, 200, 255)');
+        stripeGrad.addColorStop(1, 'rgb(94, 100, 255)');
+        ctx.fillStyle = stripeGrad;
+        ctx.fillRect(x, 0, lineWidth, clientH);
+      }
+    }
+
+    // Outer ring dimensions
+    let ringH = Math.min(clientW * 0.77, clientH) * 0.85;
+    let ringW = ringH / 0.77;
+    const faceR = Math.min(ringW, ringH) / 2 * 0.9;
+
+    // Outer light-blue ring (rim) + shadow
+    {
+      // Shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.31)';
+      const shadowWidth = radius * 0.03;
+      ctx.beginPath();
+      ctx.ellipse(
+        cx, cy,
+        ringW / 2 + shadowWidth,
+        ringH / 2 + shadowWidth,
+        0, 0, PI * 2
+      );
+      ctx.fill();
+
+      // Rim gradient
+      const rimGrad = ctx.createLinearGradient(cx, cy - ringH / 2, cx, cy + ringH / 2);
+      rimGrad.addColorStop(0, 'rgb(106, 125, 135)');
+      rimGrad.addColorStop(0.5, 'rgb(190, 200, 200)');
+      rimGrad.addColorStop(1, 'rgb(106, 125, 135)');
+      ctx.fillStyle = rimGrad;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, ringW / 2, ringH / 2, 0, 0, PI * 2);
+      ctx.fill();
+
+      // Inner black face
+      ctx.fillStyle = 'rgb(13, 13, 20)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, faceR, 0, PI * 2);
+      ctx.fill();
+    }
+
+    // Hour markers (dots) and numbers 12, 3, 6, 9
+    {
+      const fontSize = faceR * 0.20;
+      ctx.font = `bold ${fontSize}px "Arial Black", "Segoe UI", "Noto Sans", sans-serif`;
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const labels = ['12', '3', '6', '9'];
+      const labelAngles = [0, 90, 180, 270];
+      const labelDist = faceR * 0.80;
+
+      for (let i = 0; i < 4; i++) {
+        const p = handEndpoint(cx, cy, labelDist, labelAngles[i]);
+        ctx.fillText(labels[i], p.x, p.y);
+      }
+
+      // Markers
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = faceR * 0.012;
+      ctx.fillStyle = '#fff';
+
+      for (let i = 0; i < 60; i++) {
+        const angle = i * 6;
+        if (i % 5 === 0) {
+          // Hour marks: dots
+          const dist = faceR * 0.95;
+          const p = handEndpoint(cx, cy, dist, angle);
+          const r = faceR * 0.04;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, PI * 2);
+          ctx.fill();
+        } else {
+          // Second marks: short radial ticks
+          const outer = faceR * 0.98;
+          const inner = faceR * 0.91;
+          const o = handEndpoint(cx, cy, outer, angle);
+          const i_ = handEndpoint(cx, cy, inner, angle);
+          ctx.beginPath();
+          ctx.moveTo(o.x, o.y);
+          ctx.lineTo(i_.x, i_.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Current local time (stepped, no continuous sweep)
+    const now = new Date();
+    let sec = now.getSeconds();
+    let min = now.getMinutes();
+    let hour = (now.getHours() % 12) + min / 60;
+
+    if (false) {
+      min = 51;
+      sec = 55;
+      hour = 6 + min / 60;
+    }
+
+    const secAngle = sec * 6;
+    const minAngle = min * 6;
+    const hourAngle = hour * 30;
+
+    // ----- Minute hand -----
+    {
+      const { dx, dy } = dir(minAngle);
+      const m1 = dir(minAngle - 1);
+      const p1 = dir(minAngle + 1);
+      const mm = dir(minAngle - 6);
+      const pp = dir(minAngle + 6);
+      const mmm = dir(minAngle - 12);
+      const ppp = dir(minAngle + 12);
+      const mmmm = dir(minAngle - 5);
+      const pppp = dir(minAngle + 5);
+
+      const shaftEnd = faceR * 0.9;
+      const middle = faceR * 0.25;
+      const tail = -faceR * 0.08;
+
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      // Outer polygon
+      ctx.moveTo(cx + shaftEnd * dx, cy + shaftEnd * dy);
+      ctx.lineTo(cx + middle * mmm.dx, cy + middle * mmm.dy);
+      ctx.lineTo(cx + 0.8 * middle * mm.dx, cy + 0.8 * middle * mm.dy);
+      ctx.lineTo(cx + tail * ppp.dx, cy + tail * ppp.dy);
+      ctx.lineTo(cx + tail * mmm.dx, cy + tail * mmm.dy);
+      ctx.lineTo(cx + 0.8 * middle * pp.dx, cy + 0.8 * middle * pp.dy);
+      ctx.lineTo(cx + middle * ppp.dx, cy + middle * ppp.dy);
+      ctx.closePath();
+
+      // Inner polygon (alternate fill / hole effect)
+      ctx.moveTo(cx + 0.6 * shaftEnd * dx, cy + 0.6 * shaftEnd * dy);
+      ctx.lineTo(cx + middle * mmmm.dx, cy + middle * mmmm.dy);
+      ctx.lineTo(cx + 0.95 * middle * dx, cy + 0.95 * middle * dy);
+      ctx.lineTo(cx + middle * pppp.dx, cy + middle * pppp.dy);
+      ctx.closePath();
+
+      ctx.fill('evenodd');
+
+      // Bosses
+      const r1 = faceR * 0.08;
+      const r2 = faceR * 0.06;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, 0, PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#000';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r2, 0, PI * 2);
+      ctx.fill();
+    }
+
+    // ----- Hour hand -----
+    {
+      const { dx, dy } = dir(hourAngle);
+      const m1 = dir(hourAngle - 1);
+      const p1 = dir(hourAngle + 1);
+      const mm = dir(hourAngle - 5);
+      const pp = dir(hourAngle + 5);
+      const mmm = dir(hourAngle - 11);
+      const ppp = dir(hourAngle + 11);
+      const mmmm = dir(hourAngle - 4);
+      const pppp = dir(hourAngle + 4);
+
+      const shaftEnd = faceR * 0.6;
+      const middle = faceR * 0.3;
+      const tail = -faceR * 0.05;
+
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      // Outer
+      ctx.moveTo(cx + shaftEnd * dx, cy + shaftEnd * dy);
+      ctx.lineTo(cx + middle * mmm.dx, cy + middle * mmm.dy);
+      ctx.lineTo(cx + 0.8 * middle * mm.dx, cy + 0.8 * middle * mm.dy);
+      ctx.lineTo(cx + tail * ppp.dx, cy + tail * ppp.dy);
+      ctx.lineTo(cx + tail * mmm.dx, cy + tail * mmm.dy);
+      ctx.lineTo(cx + 0.8 * middle * pp.dx, cy + 0.8 * middle * pp.dy);
+      ctx.lineTo(cx + middle * ppp.dx, cy + middle * ppp.dy);
+      ctx.closePath();
+
+      // Inner
+      ctx.moveTo(cx + 0.8 * shaftEnd * dx, cy + 0.8 * shaftEnd * dy);
+      ctx.lineTo(cx + middle * mmmm.dx, cy + middle * mmmm.dy);
+      ctx.lineTo(cx + 0.95 * middle * dx, cy + 0.95 * middle * dy);
+      ctx.lineTo(cx + middle * pppp.dx, cy + middle * pppp.dy);
+      ctx.closePath();
+
+      ctx.fill('evenodd');
+
+      // Boss
+      const r1 = faceR * 0.05;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, 0, PI * 2);
+      ctx.fill();
+    }
+
+    // ----- Second hand -----
+    {
+      const m = dir(secAngle - 0.3);
+      const p = dir(secAngle + 0.3);
+      const mm = dir(secAngle - 2.5);
+      const pp = dir(secAngle + 2.5);
+
+      const shaftEnd = faceR * 0.9;
+      const tail = -faceR * 0.3;
+
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(cx + shaftEnd * m.dx, cy + shaftEnd * m.dy);
+      ctx.lineTo(cx + shaftEnd * p.dx, cy + shaftEnd * p.dy);
+      ctx.lineTo(cx + tail * mm.dx, cy + tail * mm.dy);
+      ctx.lineTo(cx + tail * pp.dx, cy + tail * pp.dy);
+      ctx.closePath();
+      ctx.fill();
+
+      // Boss
+      const r1 = faceR * 0.048;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, 0, PI * 2);
+      ctx.fill();
+    }
+
+    // "H K" label (bottom-right)
+    {
+      const fontSize = faceR * 0.20;
+      ctx.font = `bold italic ${fontSize}px "Arial Black", "Segoe UI", "Noto Sans", sans-serif`;
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('H K', clientW - fontSize * 0.5, clientH - fontSize * 0.5);
+    }
+  }
+
+  // Update ~5 Hz (same as original 200 ms timer)
+  window.addEventListener('resize', resize);
+  resize();
+  setInterval(draw, 200);
+
+  // ----- Sound ON/OFF setting (persisted in localStorage) -----
+  const SOUND_STORAGE_KEY = 'hkclock_sound_enabled';
+
+  function loadSoundEnabled() {
+    try {
+      const v = localStorage.getItem(SOUND_STORAGE_KEY);
+      return v === 'true'; // default: OFF (false) when not set
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function saveSoundEnabled(enabled) {
+    try {
+      localStorage.setItem(SOUND_STORAGE_KEY, enabled ? 'true' : 'false');
+    } catch (err) {
+      // ignore (e.g. storage unavailable)
+    }
+  }
+
+  let soundEnabled = loadSoundEnabled();
+
+  // ----- Context menu -----
+  const ctxMenu = document.getElementById('ctxMenu');
+  const ctxSoundItem = document.getElementById('ctxSoundItem');
+  const ctxSoundCheck = document.getElementById('ctxSoundCheck');
+
+  function updateCtxCheckState() {
+    ctxSoundCheck.classList.toggle('checked', soundEnabled);
+  }
+
+  function showCtxMenu(x, y) {
+    updateCtxCheckState();
+    ctxMenu.style.display = 'block';
+    const menuW = ctxMenu.offsetWidth;
+    const menuH = ctxMenu.offsetHeight;
+    const maxX = window.innerWidth - menuW - 4;
+    const maxY = window.innerHeight - menuH - 4;
+    ctxMenu.style.left = Math.min(x, Math.max(0, maxX)) + 'px';
+    ctxMenu.style.top = Math.min(y, Math.max(0, maxY)) + 'px';
+  }
+
+  function hideCtxMenu() {
+    ctxMenu.style.display = 'none';
+  }
+
+  document.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (ctxMenu.style.display === 'block' && !ctxMenu.contains(e.target)) {
+      hideCtxMenu();
+    }
+  });
+
+  window.addEventListener('resize', hideCtxMenu);
+  window.addEventListener('scroll', hideCtxMenu);
+
+  ctxSoundItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    soundEnabled = !soundEnabled;
+    saveSoundEnabled(soundEnabled);
+    updateCtxCheckState();
+    hideCtxMenu();
+  });
+
+  // ----- Second-tick sound -----
+  const sound1 = new Audio('1.mp3');
+  const sound2 = new Audio('2.mp3');
+  const sound3 = new Audio('3.mp3');
+  [sound1, sound2, sound3].forEach(a => { a.preload = 'auto'; });
+
+  function playSound(audio) {
+    if (!soundEnabled) return;
+    try {
+      audio.play();
+    } catch (err) {
+      if (err.name !== "NotAllowedError") {
+        console.log(e);
+      }
+    }
+  }
+
+  function tick() {
+    const now = new Date();
+    const min = now.getMinutes();
+    const sec = now.getSeconds();
+
+    if (sec === 0) {
+      playSound(sound3);
+    } else if (sec >= 57) {
+      playSound(sound2);
+    } else {
+      playSound(sound1);
+    }
+  }
+
+  function scheduleNextTick() {
+    const now = Date.now();
+    const delay = 1000 - (now % 1000);
+    setTimeout(() => {
+      tick();
+      scheduleNextTick();
+    }, delay);
+  }
+
+  scheduleNextTick();
+})();
+</script>
+</body>
+</html>

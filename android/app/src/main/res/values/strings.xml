@@ -1,0 +1,21 @@
+<!-- {{LANGUAGE_SPECIFIC}} -->
+<resources>
+    <!-- common -->
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="clear">Clear</string>
+    <string name="reset">Reset</string>
+    <string name="needs_microphone">This app needs permission to access the microphone.</string>
+    <string name="cant_use_microphone">This app cannot use the microphone without permission.</string>
+    <string name="needs_camera">This app needs permission to access the camera.</string>
+    <string name="cant_use_camera">This app cannot use the camera without permission.</string>
+
+    <!-- main -->
+    <string name="app_name">HK Clock</string>
+    <string name="web_view">WebView</string>
+    <string name="progress_bar">ProgressBar</string>
+    <string name="now_starting">Loading HK Clock...</string>
+
+    <!-- URLs -->
+    <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>
+</resources>

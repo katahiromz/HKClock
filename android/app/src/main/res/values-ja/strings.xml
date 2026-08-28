@@ -1,0 +1,21 @@
+<!-- {{LANGUAGE_SPECIFIC}} -->
+<resources>
+    <!-- common -->
+    <string name="ok">OK</string>
+    <string name="cancel">キャンセル</string>
+    <string name="clear">クリア</string>
+    <string name="reset">リセット</string>
+    <string name="needs_microphone">このアプリがマイクにアクセスするには、権限が必要です。</string>
+    <string name="cant_use_microphone">権限がなければ、このアプリはマイクを使えません。</string>
+    <string name="needs_camera">このアプリがカメラにアクセスするには、権限が必要です。</string>
+    <string name="cant_use_camera">権限がなければ、このアプリはカメラを使えません。</string>
+
+    <!-- main -->
+    <string name="app_name">HK時計</string>
+    <string name="web_view">ウェブ ビュー</string>
+    <string name="progress_bar">プログレス バー</string>
+    <string name="now_starting">HK時計を起動中...</string>
+
+    <!-- URLs -->
+    <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>
+</resources>
