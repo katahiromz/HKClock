@@ -633,6 +633,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
             HMENU hMenu = CreatePopupMenu();
             BOOL bTitleBar = (style & WS_CAPTION);
+            AppendMenuW(hMenu, MF_STRING, 105, L"HK時計 Version 1.0.1");
+            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, 102, (bZoomed | bIconic) ? L"元のサイズに戻す(&R)" : L"最大化(&X)");
             if (!bZoomed && !bIconic)
                 AppendMenuW(hMenu, MF_STRING, 103, L"最小化(&N)");
@@ -640,6 +642,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             AppendMenuW(hMenu, MF_STRING, 104, L"音声を再生");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, 100, L"閉じる(&C)\tAlt+F4");
+
+            MENUITEMINFOW info = { sizeof(info), MIIM_STATE };
+            info.fState = MFS_GRAYED;
+            SetMenuItemInfoW(hMenu, 105, FALSE, &info);
 
             if (g_bPlaySound)
                 CheckMenuItem(hMenu, 104, MF_CHECKED);
@@ -685,6 +691,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_bPlaySound = !g_bPlaySound;
                 if (!g_bPlaySound)
                     PlaySoundW(nullptr, nullptr, SND_PURGE);
+                break;
+            case 105:
                 break;
             }
         }
