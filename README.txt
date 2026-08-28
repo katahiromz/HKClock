@@ -20,7 +20,7 @@
 
 - 最新のWebブラウザ
 - Windows XP以降
-- Android
+- Android 16以降
 
 ## Webアプリ
 
