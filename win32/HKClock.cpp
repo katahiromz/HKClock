@@ -746,6 +746,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return 0;
 
+    case WM_POWERBROADCAST:
+        // The system just woke up from sleep/hibernation. The NTP offset
+        // we last computed may now be stale (the background sync thread
+        // was asleep too, and the system clock can drift or jump during
+        // suspend), so kick off an immediate one-shot resync and force a
+        // repaint right away instead of waiting for the next scheduled
+        // sync (up to 30 minutes later) or the next 200ms timer tick.
+        if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
+            CloseHandle(CreateThread(nullptr, 0, OneShotSyncThreadProc, nullptr, 0, nullptr));
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return TRUE;
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         if (HDC hdc = BeginPaint(hwnd, &ps))
