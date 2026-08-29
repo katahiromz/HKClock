@@ -166,14 +166,6 @@
       }
     },
     {
-      name: 'worldtimeapi.org (mirror)',
-      url: 'https://worldtimeapi.org/api/timezone/Etc/UTC',
-      parse: async (res) => {
-        const data = await res.json();
-        return new Date(data.utc_datetime).getTime();
-      }
-    },
-    {
       name: 'Cloudflare trace',
       url: 'https://www.cloudflare.com/cdn-cgi/trace',
       parse: async (res) => {
