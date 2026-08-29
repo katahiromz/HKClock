@@ -143,29 +143,85 @@
 
   // ----- Internet time sync -----
   // Adjusts the clock to match an internet time server, correcting for
-  // the local device clock's error. Falls back silently to the local
-  // clock if the network request fails.
+  // the local device clock's error. Tries several independent time
+  // sources in order (any one of them being down/unreachable is fine),
+  // and falls back silently to the local device clock if all of them
+  // fail (e.g. no network connectivity).
   let timeOffsetMs = 0;
 
   function nowCorrected() {
     return new Date(Date.now() + timeOffsetMs);
   }
 
-  async function syncTimeWithInternet() {
-    try {
-      const t0 = performance.now();
-      const res = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC', { cache: 'no-store' });
-      const data = await res.json();
-      const t1 = performance.now();
-      const roundTrip = t1 - t0;
-      // Assume symmetric latency: server time was accurate at (t0 + roundTrip/2)
-      const serverTimeMs = new Date(data.utc_datetime).getTime() + roundTrip / 2;
-      const localTimeAtReceipt = Date.now();
-      timeOffsetMs = serverTimeMs - localTimeAtReceipt;
-    } catch (err) {
-      // Network unavailable or blocked: keep using local device time
-      console.log('Internet time sync failed, using local clock:', err);
+  // Each source: a fetch() call plus a parser that extracts a UTC
+  // timestamp (ms since epoch) from the response. Ordered roughly by
+  // preference; the first one that succeeds wins.
+  const TIME_SOURCES = [
+    {
+      name: 'timeapi.io',
+      url: 'https://timeapi.io/api/time/current/zone?timeZone=Etc/UTC',
+      parse: async (res) => {
+        const data = await res.json();
+        return new Date(data.dateTime + 'Z').getTime();
+      }
+    },
+    {
+      name: 'worldtimeapi.org (mirror)',
+      url: 'https://worldtimeapi.org/api/timezone/Etc/UTC',
+      parse: async (res) => {
+        const data = await res.json();
+        return new Date(data.utc_datetime).getTime();
+      }
+    },
+    {
+      name: 'Cloudflare trace',
+      url: 'https://www.cloudflare.com/cdn-cgi/trace',
+      parse: async (res) => {
+        const text = await res.text();
+        const m = text.match(/^ts=([\d.]+)/m);
+        if (!m) throw new Error('no ts field in cloudflare trace');
+        return parseFloat(m[1]) * 1000;
+      }
+    },
+    {
+      name: 'HTTP Date header (generic HTTPS fallback)',
+      // Any reachable HTTPS endpoint works here since we only read the
+      // standard, CORS-safelisted "Date" response header, not the body.
+      url: 'https://www.gstatic.com/generate_204',
+      parse: async (res) => {
+        const dateHeader = res.headers.get('date');
+        if (!dateHeader) throw new Error('no Date header in response');
+        return new Date(dateHeader).getTime();
+      }
     }
+  ];
+
+  async function trySource(source) {
+    const t0 = performance.now();
+    const res = await fetch(source.url, { cache: 'no-store' });
+    const serverTimeMs = await source.parse(res);
+    const t1 = performance.now();
+    const roundTrip = t1 - t0;
+    if (!isFinite(serverTimeMs)) throw new Error('invalid timestamp');
+    // Assume symmetric latency: server time was accurate at (t0 + roundTrip/2)
+    return { serverTimeMs: serverTimeMs + roundTrip / 2, localTimeAtReceipt: Date.now() };
+  }
+
+  async function syncTimeWithInternet() {
+    for (const source of TIME_SOURCES) {
+      try {
+        const { serverTimeMs, localTimeAtReceipt } = await trySource(source);
+        timeOffsetMs = serverTimeMs - localTimeAtReceipt;
+        console.log(`Internet time sync OK via ${source.name}, offset ${timeOffsetMs.toFixed(0)} ms`);
+        return; // success: stop trying further sources
+      } catch (err) {
+        console.log(`Internet time sync failed via ${source.name}:`, err);
+        // fall through to the next source
+      }
+    }
+    // All sources failed: keep using the local device clock (timeOffsetMs
+    // stays at its last known-good value, or 0 if never synced).
+    console.log('All internet time sources failed, using local clock.');
   }
 
   // Sync immediately, then re-sync periodically to correct for drift
