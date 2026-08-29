@@ -141,6 +141,37 @@
     draw();
   }
 
+  // ----- Internet time sync -----
+  // Adjusts the clock to match an internet time server, correcting for
+  // the local device clock's error. Falls back silently to the local
+  // clock if the network request fails.
+  let timeOffsetMs = 0;
+
+  function nowCorrected() {
+    return new Date(Date.now() + timeOffsetMs);
+  }
+
+  async function syncTimeWithInternet() {
+    try {
+      const t0 = performance.now();
+      const res = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC', { cache: 'no-store' });
+      const data = await res.json();
+      const t1 = performance.now();
+      const roundTrip = t1 - t0;
+      // Assume symmetric latency: server time was accurate at (t0 + roundTrip/2)
+      const serverTimeMs = new Date(data.utc_datetime).getTime() + roundTrip / 2;
+      const localTimeAtReceipt = Date.now();
+      timeOffsetMs = serverTimeMs - localTimeAtReceipt;
+    } catch (err) {
+      // Network unavailable or blocked: keep using local device time
+      console.log('Internet time sync failed, using local clock:', err);
+    }
+  }
+
+  // Sync immediately, then re-sync periodically to correct for drift
+  syncTimeWithInternet();
+  setInterval(syncTimeWithInternet, 10 * 60 * 1000); // every 10 minutes
+
   const PI = Math.PI;
 
   function deg2rad(deg) {
@@ -281,7 +312,7 @@
     }
 
     // Current local time (stepped, no continuous sweep)
-    const now = new Date();
+    const now = nowCorrected();
     let sec = now.getSeconds();
     let min = now.getMinutes();
     let hour = (now.getHours() % 12) + min / 60;
@@ -521,7 +552,7 @@
   }
 
   function tick() {
-    const now = new Date();
+    const now = nowCorrected();
     const min = now.getMinutes();
     const sec = now.getSeconds();
 
@@ -535,7 +566,7 @@
   }
 
   function scheduleNextTick() {
-    const now = Date.now();
+    const now = nowCorrected().getTime();
     const delay = 1000 - (now % 1000);
     setTimeout(() => {
       tick();
