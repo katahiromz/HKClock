@@ -513,6 +513,23 @@
   resize();
   setInterval(draw, 200);
 
+  // ----- Resume from background/sleep -----
+  // Android Chrome (and other browsers) throttle or pause setInterval/
+  // setTimeout while a tab is hidden or the device is asleep. When the
+  // tab becomes visible again, immediately redraw with the current time
+  // (instead of waiting for the next throttled tick) and re-sync with
+  // the internet time source, since the local clock may have drifted
+  // or the device may have been asleep for a while.
+  function handleResume() {
+    if (document.visibilityState === 'visible') {
+      draw();
+      syncTimeWithInternet().then(draw);
+    }
+  }
+  document.addEventListener('visibilitychange', handleResume);
+  window.addEventListener('focus', handleResume);
+  window.addEventListener('pageshow', handleResume);
+
   // ----- Sound ON/OFF setting (persisted in localStorage) -----
   const SOUND_STORAGE_KEY = 'hkclock_sound_enabled';
 
