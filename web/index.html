@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="keywords" content="HK時計,Webアプリ,ウェブアプリ,katahiromz">
+<meta name="keywords" content="HK時計,HKClock,HK-Clock,Webアプリ,ウェブアプリ,katahiromz">
 <title>HK時計</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -205,20 +205,47 @@
         const { serverTimeMs, localTimeAtReceipt } = await trySource(source);
         timeOffsetMs = serverTimeMs - localTimeAtReceipt;
         console.log(`Internet time sync OK via ${source.name}, offset ${timeOffsetMs.toFixed(0)} ms`);
-        return; // success: stop trying further sources
+        return true; // success: stop trying further sources
       } catch (err) {
         console.log(`Internet time sync failed via ${source.name}:`, err);
         // fall through to the next source
       }
     }
     // All sources failed: keep using the local device clock (timeOffsetMs
-    // stays at its last known-good value, or 0 if never synced).
+    // stays at its last known-good value, or 0 if never synced). This is
+    // common right after the browser/OS starts up, before Wi-Fi/DNS is
+    // actually ready, so the caller should retry again soon rather than
+    // waiting for the next long-interval sync.
     console.log('All internet time sources failed, using local clock.');
+    return false;
   }
 
-  // Sync immediately, then re-sync periodically to correct for drift
-  syncTimeWithInternet();
-  setInterval(syncTimeWithInternet, 10 * 60 * 1000); // every 10 minutes
+  // Sync immediately, then re-sync periodically to correct for drift.
+  // Retry soon after a failure (network likely not ready yet, e.g. right
+  // after browser/device startup) instead of waiting a full 10 minutes;
+  // otherwise back off to the normal periodic interval.
+  const SYNC_INTERVAL_OK_MS = 10 * 60 * 1000;   // 10 minutes after success
+  const SYNC_INTERVAL_FAIL_MS = 60 * 1000;      // 1 minute after failure
+  let syncTimer = null;
+
+  function scheduleNextSync(delayMs) {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(runSync, delayMs);
+  }
+
+  async function runSync() {
+    const ok = await syncTimeWithInternet();
+    scheduleNextSync(ok ? SYNC_INTERVAL_OK_MS : SYNC_INTERVAL_FAIL_MS);
+  }
+
+  runSync();
+
+  // Also resync immediately when the browser regains connectivity, so we
+  // don't sit on a stale/local-clock offset until the next scheduled try.
+  window.addEventListener('online', () => {
+    console.log('Network back online, resyncing time.');
+    runSync();
+  });
 
   const PI = Math.PI;
 
@@ -523,7 +550,7 @@
   function handleResume() {
     if (document.visibilityState === 'visible') {
       draw();
-      syncTimeWithInternet().then(draw);
+      runSync().then(draw);
     }
   }
   document.addEventListener('visibilitychange', handleResume);
