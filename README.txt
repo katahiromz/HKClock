@@ -28,6 +28,10 @@
 
 - https://katahiromz.github.io/hk-clock/
 
+## ダウンロード
+
+- https://github.com/katahiromz/HKClock/releases
+
 ## 免責事項
 
 - お使いのシステムの時刻同期の精度によっては3秒程度の誤差が発生することがあります。
