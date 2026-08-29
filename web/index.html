@@ -510,12 +510,13 @@
 
   function playSound(audio) {
     if (!soundEnabled) return;
-    try {
-      audio.play();
-    } catch (err) {
-      if (err.name !== "NotAllowedError") {
-        console.log(e);
-      }
+    const p = audio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        if (err.name !== 'NotAllowedError') {
+          console.log(err);
+        }
+      });
     }
   }
 
