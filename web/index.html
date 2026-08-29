@@ -143,137 +143,76 @@
 
   // ----- Internet time sync -----
   // Corrects the displayed time against internet time servers.
+  // Local device clock is treated as accurate when sync has not yet
+  // succeeded.  Offset is session-only (not persisted) to avoid stale values.
   //
-  // Android Chrome peculiarities this addresses:
-  //  1. Network/DNS often not ready at cold start or right after sleep →
-  //     aggressive progressive retries + persisted last-good offset.
-  //  2. Android may adjust the system wall clock (NITZ/NTP) after the page
-  //     has already loaded.  Date.now() then jumps while our stored offset
-  //     was computed against the *old* wall clock → displayed time becomes
-  //     wrong by the size of the jump.  We detect such discontinuities by
-  //     comparing wall-clock advance vs. performance.now() (monotonic) and
-  //     immediately invalidate the offset + force a re-sync.
-  //  3. Between successful syncs we prefer a monotonic estimate so small
-  //     local-clock drift does not accumulate.
+  // Discontinuities (wall-clock jump, large frame gap, tab resume) all go
+  // through resetOffsetAndResync() so the same recovery path is used.
 
-  const OFFSET_STORAGE_KEY = 'hkclock_time_offset_ms';
-  const JUMP_THRESHOLD_MS = 1500; // wall vs monotonic discrepancy that triggers re-sync
-  // After this many consecutive failures without a successful sync in the
-  // current session, discard any persisted offset and trust the local clock
-  // (user confirmed the device clock itself is accurate).
-  const MAX_FAILURES_BEFORE_TRUST_LOCAL = 4;
+  const JUMP_THRESHOLD_MS = 1500;
+  const FRAME_GAP_RESET_MS = 2500;
+  const SYNC_INTERVAL_OK_MS = 10 * 60 * 1000;
+  const SYNC_INTERVAL_FAIL_MS = 2000; // keep trying every 2 s until first success
 
-  let timeOffsetMs = 0;          // serverTime - Date.now() at last successful sync
-  let consecutiveFailures = 0;
-  let hasSyncedOnce = false;     // true after at least one successful internet sync this session
-
-  // Monotonic baseline used to detect wall-clock jumps and to keep time
-  // continuous between syncs.
+  let timeOffsetMs = 0;
+  let hasSyncedOnce = false;
   let lastWallMs = Date.now();
   let lastPerfMs = performance.now();
-
-  // Track frame interval; a large gap (sleep / background throttle) means
-  // the wall clock or offset may no longer be trustworthy → reset.
   let lastDrawPerfMs = performance.now();
-  const FRAME_GAP_RESET_MS = 2500; // > ~2.5 s between frames → treat as discontinuity
+  let syncTimer = null;
+  let syncInFlight = false;
 
-  function loadPersistedOffset() {
-    // Intentionally conservative: we restore a previous offset only as a
-    // short-lived hint.  If internet sync does not succeed quickly we
-    // discard it (see syncTimeWithInternet / failure path) because a stale
-    // offset is worse than the accurate local clock the user confirmed.
-    try {
-      const v = localStorage.getItem(OFFSET_STORAGE_KEY);
-      if (v !== null) {
-        const n = parseFloat(v);
-        if (isFinite(n) && Math.abs(n) < 30 * 60 * 1000) { // ignore absurd values
-          timeOffsetMs = n;
-          console.log(`Restored persisted time offset (temporary): ${timeOffsetMs.toFixed(0)} ms`);
-        }
-      }
-    } catch (err) { /* storage unavailable */ }
-  }
-
-  function savePersistedOffset(offset) {
-    try {
-      localStorage.setItem(OFFSET_STORAGE_KEY, String(offset));
-    } catch (err) { /* ignore */ }
-  }
-
-  function clearPersistedOffset() {
-    try {
-      localStorage.removeItem(OFFSET_STORAGE_KEY);
-    } catch (err) { /* ignore */ }
-  }
-
-  loadPersistedOffset();
-
-  // Detect if the system wall clock jumped relative to the monotonic clock.
-  // Returns the signed jump size in ms (positive = wall jumped forward),
-  // or 0 if no significant jump.
-  function detectWallClockJump() {
-    const wallNow = Date.now();
-    const perfNow = performance.now();
-    const wallDelta = wallNow - lastWallMs;
-    const perfDelta = perfNow - lastPerfMs;
-    // Update baselines always so the next check is relative to now.
-    lastWallMs = wallNow;
-    lastPerfMs = perfNow;
-    const discrepancy = wallDelta - perfDelta;
-    if (Math.abs(discrepancy) > JUMP_THRESHOLD_MS) {
-      console.log(`Wall-clock jump detected: ${discrepancy.toFixed(0)} ms (wallΔ=${wallDelta.toFixed(0)}, perfΔ=${perfDelta.toFixed(0)})`);
-      return discrepancy;
+  function resetOffsetAndResync(reason) {
+    if (timeOffsetMs !== 0 || hasSyncedOnce) {
+      console.log(`Time discontinuity (${reason}) – resetting offset and re-syncing`);
     }
-    return 0;
+    timeOffsetMs = 0;
+    hasSyncedOnce = false;
+    lastWallMs = Date.now();
+    lastPerfMs = performance.now();
+    scheduleNextSync(0);
   }
 
   function nowCorrected() {
-    // First, check for a system clock adjustment since the last call.
-    const jump = detectWallClockJump();
-    if (jump !== 0) {
-      // The stored offset was relative to the *old* wall clock.  Invalidate
-      // it so we fall back to raw Date.now() (or the next successful sync)
-      // instead of showing a permanently wrong time.
-      timeOffsetMs = 0;
-      hasSyncedOnce = false;
-      clearPersistedOffset();
-      consecutiveFailures = 0;
-      // Kick a re-sync as soon as possible (non-blocking).
-      scheduleNextSync(0);
+    const wallNow = Date.now();
+    const perfNow = performance.now();
+    const discrepancy = (wallNow - lastWallMs) - (perfNow - lastPerfMs);
+    lastWallMs = wallNow;
+    lastPerfMs = perfNow;
+    if (Math.abs(discrepancy) > JUMP_THRESHOLD_MS) {
+      resetOffsetAndResync(`wall-clock jump ${discrepancy.toFixed(0)} ms`);
     }
     return new Date(Date.now() + timeOffsetMs);
   }
 
-  // Prefer pure HTTP Date-header sources first: they need no body parse,
-  // the Date header is CORS-safelisted (always readable), and the endpoints
-  // are highly available on mobile networks. JSON / body-parsing sources
-  // come after as higher-precision fallbacks.
+  // Date-header sources first (CORS-safelisted, no body parse), then
+  // higher-precision body-based sources.
   const TIME_SOURCES = [
     {
       name: 'HTTP Date (gstatic)',
       url: 'https://www.gstatic.com/generate_204',
       parse: async (res) => {
-        const dateHeader = res.headers.get('date');
-        if (!dateHeader) throw new Error('no Date header');
-        return new Date(dateHeader).getTime();
+        const h = res.headers.get('date');
+        if (!h) throw new Error('no Date header');
+        return new Date(h).getTime();
       }
     },
     {
       name: 'HTTP Date (Cloudflare)',
       url: 'https://www.cloudflare.com/cdn-cgi/trace',
       parse: async (res) => {
-        const dateHeader = res.headers.get('date');
-        if (!dateHeader) throw new Error('no Date header');
-        return new Date(dateHeader).getTime();
+        const h = res.headers.get('date');
+        if (!h) throw new Error('no Date header');
+        return new Date(h).getTime();
       }
     },
     {
       name: 'HTTP Date (Google)',
       url: 'https://www.google.com/generate_204',
       parse: async (res) => {
-        const dateHeader = res.headers.get('date');
-        if (!dateHeader) throw new Error('no Date header');
-        return new Date(dateHeader).getTime();
+        const h = res.headers.get('date');
+        if (!h) throw new Error('no Date header');
+        return new Date(h).getTime();
       }
     },
     {
@@ -309,16 +248,9 @@
   async function trySource(source) {
     const t0 = performance.now();
     const res = await fetchWithTimeout(source.url, 6000);
-    if (!res.ok && res.status !== 204) {
-      // generate_204 returns 204; treat other non-ok as failure
-      // but still try to read Date if present
-    }
     const serverTimeMs = await source.parse(res);
-    const t1 = performance.now();
-    const roundTrip = t1 - t0;
+    const roundTrip = performance.now() - t0;
     if (!isFinite(serverTimeMs)) throw new Error('invalid timestamp');
-    // Symmetric latency; Date header has ~1 s resolution so RTT compensation
-    // is approximate but better than nothing.
     return {
       serverTimeMs: serverTimeMs + roundTrip / 2,
       localTimeAtReceipt: Date.now()
@@ -326,74 +258,21 @@
   }
 
   async function syncTimeWithInternet() {
-    const offsets = [];
     for (const source of TIME_SOURCES) {
       try {
         const { serverTimeMs, localTimeAtReceipt } = await trySource(source);
-        const off = serverTimeMs - localTimeAtReceipt;
-        offsets.push(off);
-        console.log(`Internet time sample via ${source.name}: offset ${off.toFixed(0)} ms`);
-        // Use the first successful sample immediately so the clock corrects
-        // as soon as any source answers; later samples can refine.
-        if (!hasSyncedOnce) {
-          timeOffsetMs = off;
-          savePersistedOffset(timeOffsetMs);
-          hasSyncedOnce = true;
-          consecutiveFailures = 0;
-          lastWallMs = Date.now();
-          lastPerfMs = performance.now();
-          console.log(`Internet time sync OK (first) via ${source.name}, offset ${timeOffsetMs.toFixed(0)} ms`);
-          return true;
-        }
+        timeOffsetMs = serverTimeMs - localTimeAtReceipt;
+        hasSyncedOnce = true;
+        lastWallMs = Date.now();
+        lastPerfMs = performance.now();
+        console.log(`Internet time sync OK via ${source.name}, offset ${timeOffsetMs.toFixed(0)} ms`);
+        return true;
       } catch (err) {
         console.log(`Internet time sync failed via ${source.name}:`, err && err.message ? err.message : err);
       }
     }
-    if (offsets.length > 0) {
-      // Median of successful samples this round (more robust than first).
-      offsets.sort((a, b) => a - b);
-      const mid = Math.floor(offsets.length / 2);
-      const median = offsets.length % 2 ? offsets[mid] : (offsets[mid - 1] + offsets[mid]) / 2;
-      timeOffsetMs = median;
-      savePersistedOffset(timeOffsetMs);
-      consecutiveFailures = 0;
-      hasSyncedOnce = true;
-      lastWallMs = Date.now();
-      lastPerfMs = performance.now();
-      console.log(`Internet time sync OK (median of ${offsets.length}), offset ${timeOffsetMs.toFixed(0)} ms`);
-      return true;
-    }
-    consecutiveFailures++;
-    // If we still have not succeeded this session and failures pile up,
-    // discard any restored/persisted offset and trust the local device
-    // clock (confirmed accurate by the user). A stale offset of several
-    // minutes is worse than a correct local clock.
-    if (!hasSyncedOnce && consecutiveFailures >= MAX_FAILURES_BEFORE_TRUST_LOCAL) {
-      if (timeOffsetMs !== 0) {
-        console.log(`Discarding unconfirmed offset ${timeOffsetMs.toFixed(0)} ms after ${consecutiveFailures} failures; trusting local clock.`);
-        timeOffsetMs = 0;
-        clearPersistedOffset();
-        try { draw(); } catch (e) { /* may not be defined yet */ }
-      }
-    }
-    console.log('All internet time sources failed, using ' + (hasSyncedOnce ? 'last good offset' : 'local clock') + '.');
+    console.log('All internet time sources failed, using local clock.');
     return false;
-  }
-
-  // Until we have succeeded at least once this session, keep retrying every
-  // few seconds. After success, back off to a long interval.
-  const SYNC_INTERVAL_OK_MS = 10 * 60 * 1000;
-  const FAIL_BACKOFF_MS = [1000, 1500, 2000, 3000, 4000, 5000, 8000, 15000];
-  let syncTimer = null;
-  let syncInFlight = false;
-
-  function nextFailDelay() {
-    // Never back off beyond 5 s until the first successful sync of the session.
-    if (!hasSyncedOnce) {
-      return Math.min(FAIL_BACKOFF_MS[Math.min(consecutiveFailures - 1, FAIL_BACKOFF_MS.length - 1)] || 2000, 5000);
-    }
-    const idx = Math.min(consecutiveFailures - 1, FAIL_BACKOFF_MS.length - 1);
-    return FAIL_BACKOFF_MS[Math.max(0, idx)];
   }
 
   function scheduleNextSync(delayMs) {
@@ -409,29 +288,17 @@
       if (ok) {
         try { draw(); } catch (e) { /* draw may not be defined yet */ }
       }
-      scheduleNextSync(ok ? SYNC_INTERVAL_OK_MS : nextFailDelay());
+      // Single retry policy: 2 s until first success, then 10 min.
+      scheduleNextSync(ok ? SYNC_INTERVAL_OK_MS : SYNC_INTERVAL_FAIL_MS);
     } finally {
       syncInFlight = false;
     }
   }
 
-  // Start immediately.
   runSync();
-
-  // Continuous rapid attempts for the first 60 s if still not synced.
-  let rapidTries = 0;
-  const rapidTimer = setInterval(() => {
-    rapidTries++;
-    if (hasSyncedOnce || rapidTries >= 40) {
-      clearInterval(rapidTimer);
-      return;
-    }
-    if (!syncInFlight) runSync();
-  }, 1500);
 
   window.addEventListener('online', () => {
     console.log('Network back online, resyncing time.');
-    consecutiveFailures = 0;
     runSync();
   });
 
@@ -456,22 +323,11 @@
   }
 
   function draw() {
-    // If the interval between frames has jumped (tab was frozen, device
-    // slept, Chrome throttled timers, etc.), the stored offset may be
-    // stale relative to the current wall clock.  Reset it and force a
-    // fresh internet sync so the hands show the correct time immediately.
     const nowPerf = performance.now();
     const frameGap = nowPerf - lastDrawPerfMs;
     lastDrawPerfMs = nowPerf;
     if (frameGap > FRAME_GAP_RESET_MS) {
-      console.log(`Frame gap ${frameGap.toFixed(0)} ms – resetting time offset and re-syncing`);
-      timeOffsetMs = 0;
-      hasSyncedOnce = false;
-      clearPersistedOffset();
-      consecutiveFailures = 0;
-      lastWallMs = Date.now();
-      lastPerfMs = performance.now();
-      scheduleNextSync(0);
+      resetOffsetAndResync(`frame gap ${frameGap.toFixed(0)} ms`);
     }
 
     const clientW = window.innerWidth;
@@ -747,35 +603,15 @@
   setInterval(draw, 200);
 
   // ----- Resume from background/sleep -----
-  // Android Chrome (and other browsers) throttle or pause setInterval/
-  // setTimeout while a tab is hidden or the device is asleep. When the
-  // tab becomes visible again, immediately redraw with the current time
-  // (instead of waiting for the next throttled tick) and re-sync with
-  // the internet time source, since the local clock may have drifted
-  // or the device may have been asleep for a while.
-  //
-  // Also listen for the Page Lifecycle "resume" event (when a frozen
-  // page is thawed) which is especially relevant after deep sleep on
-  // mobile.
   function handleResume() {
     if (document.visibilityState === 'visible' || document.visibilityState === undefined) {
-      // Refresh baselines *before* draw so a jump that occurred while
-      // the tab was frozen is detected immediately.
-      const jump = detectWallClockJump();
-      if (jump !== 0) {
-        timeOffsetMs = 0;
-        hasSyncedOnce = false;
-        clearPersistedOffset();
-      }
+      resetOffsetAndResync('tab resume');
       draw();
-      consecutiveFailures = 0; // allow aggressive retries after wake
-      runSync();               // runSync itself redraws on success
     }
   }
   document.addEventListener('visibilitychange', handleResume);
   window.addEventListener('focus', handleResume);
   window.addEventListener('pageshow', handleResume);
-  // Page Lifecycle API (supported on modern Chrome / Android)
   document.addEventListener('resume', handleResume);
 
   // ----- Sound ON/OFF setting (persisted in localStorage) -----
