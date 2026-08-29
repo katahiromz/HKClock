@@ -65,11 +65,25 @@
     border-width: 0 2px 2px 0;
     transform: rotate(45deg);
   }
+  #ctxMenu .ctx-sep {
+    height: 1px;
+    margin: 6px 4px;
+    background: rgba(255, 255, 255, 0.15);
+  }
+  #ctxMenu .ctx-item.ctx-version {
+    color: rgba(255, 255, 255, 0.65);
+    font-size: 13px;
+    cursor: default;
+  }
 </style>
 </head>
 <body>
 <canvas id="clock"></canvas>
 <div id="ctxMenu">
+  <div class="ctx-item ctx-version" id="ctxVersionItem">
+    <span>HK時計 Version 1.0.1</span>
+  </div>
+  <div class="ctx-sep"></div>
   <div class="ctx-item" id="ctxSoundItem">
     <span class="ctx-check" id="ctxSoundCheck"></span>
     <span>音声を再生する</span>
