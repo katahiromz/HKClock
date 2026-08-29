@@ -145,9 +145,44 @@
   // Adjusts the clock to match an internet time server, correcting for
   // the local device clock's error. Tries several independent time
   // sources in order (any one of them being down/unreachable is fine),
-  // and falls back silently to the local device clock if all of them
-  // fail (e.g. no network connectivity).
+  // and falls back to the last known-good offset (persisted) or local
+  // device clock if all of them fail (e.g. no network connectivity).
+  //
+  // On Android Chrome especially, network/DNS may not be ready right
+  // after browser launch or device wake from sleep, so we:
+  //  - restore the previous successful offset from localStorage immediately
+  //  - retry aggressively (2s → 5s → 10s → 30s → 60s) until success
+  //  - force a redraw after every successful sync
+  //  - re-sync on online / visibility / focus / pageshow / resume
+
+  const OFFSET_STORAGE_KEY = 'hkclock_time_offset_ms';
   let timeOffsetMs = 0;
+  let consecutiveFailures = 0;
+
+  function loadPersistedOffset() {
+    try {
+      const v = localStorage.getItem(OFFSET_STORAGE_KEY);
+      if (v !== null) {
+        const n = parseFloat(v);
+        if (isFinite(n)) {
+          timeOffsetMs = n;
+          console.log(`Restored persisted time offset: ${timeOffsetMs.toFixed(0)} ms`);
+        }
+      }
+    } catch (err) {
+      // storage unavailable
+    }
+  }
+
+  function savePersistedOffset(offset) {
+    try {
+      localStorage.setItem(OFFSET_STORAGE_KEY, String(offset));
+    } catch (err) {
+      // ignore
+    }
+  }
+
+  loadPersistedOffset();
 
   function nowCorrected() {
     return new Date(Date.now() + timeOffsetMs);
@@ -190,7 +225,12 @@
 
   async function trySource(source) {
     const t0 = performance.now();
-    const res = await fetch(source.url, { cache: 'no-store' });
+    const res = await fetch(source.url, {
+      cache: 'no-store',
+      // Abort after a short timeout so a hung request does not block the
+      // whole sync cycle (important on flaky mobile networks at startup).
+      signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined
+    });
     const serverTimeMs = await source.parse(res);
     const t1 = performance.now();
     const roundTrip = t1 - t0;
@@ -204,6 +244,8 @@
       try {
         const { serverTimeMs, localTimeAtReceipt } = await trySource(source);
         timeOffsetMs = serverTimeMs - localTimeAtReceipt;
+        savePersistedOffset(timeOffsetMs);
+        consecutiveFailures = 0;
         console.log(`Internet time sync OK via ${source.name}, offset ${timeOffsetMs.toFixed(0)} ms`);
         return true; // success: stop trying further sources
       } catch (err) {
@@ -211,22 +253,25 @@
         // fall through to the next source
       }
     }
-    // All sources failed: keep using the local device clock (timeOffsetMs
-    // stays at its last known-good value, or 0 if never synced). This is
-    // common right after the browser/OS starts up, before Wi-Fi/DNS is
-    // actually ready, so the caller should retry again soon rather than
-    // waiting for the next long-interval sync.
-    console.log('All internet time sources failed, using local clock.');
+    // All sources failed: keep using the last known-good offset (or 0).
+    // Common right after browser/OS start or wake, before Wi-Fi/DNS is ready.
+    consecutiveFailures++;
+    console.log('All internet time sources failed, using last known offset / local clock.');
     return false;
   }
 
   // Sync immediately, then re-sync periodically to correct for drift.
-  // Retry soon after a failure (network likely not ready yet, e.g. right
-  // after browser/device startup) instead of waiting a full 10 minutes;
-  // otherwise back off to the normal periodic interval.
+  // On failure (typical at cold start / wake) use short progressive backoff
+  // so the clock becomes accurate as soon as the network is usable.
   const SYNC_INTERVAL_OK_MS = 10 * 60 * 1000;   // 10 minutes after success
-  const SYNC_INTERVAL_FAIL_MS = 60 * 1000;      // 1 minute after failure
+  const FAIL_BACKOFF_MS = [2000, 5000, 10000, 30000, 60000]; // progressive
   let syncTimer = null;
+  let syncInFlight = false;
+
+  function nextFailDelay() {
+    const idx = Math.min(consecutiveFailures - 1, FAIL_BACKOFF_MS.length - 1);
+    return FAIL_BACKOFF_MS[Math.max(0, idx)];
+  }
 
   function scheduleNextSync(delayMs) {
     if (syncTimer) clearTimeout(syncTimer);
@@ -234,16 +279,28 @@
   }
 
   async function runSync() {
-    const ok = await syncTimeWithInternet();
-    scheduleNextSync(ok ? SYNC_INTERVAL_OK_MS : SYNC_INTERVAL_FAIL_MS);
+    if (syncInFlight) return;
+    syncInFlight = true;
+    try {
+      const ok = await syncTimeWithInternet();
+      if (ok) {
+        // Immediate redraw so the hands jump to the correct time the
+        // moment we obtain a good offset (critical after sleep / launch).
+        draw();
+      }
+      scheduleNextSync(ok ? SYNC_INTERVAL_OK_MS : nextFailDelay());
+    } finally {
+      syncInFlight = false;
+    }
   }
 
+  // Kick off the first sync right away (uses persisted offset until it succeeds).
   runSync();
 
-  // Also resync immediately when the browser regains connectivity, so we
-  // don't sit on a stale/local-clock offset until the next scheduled try.
+  // Also resync immediately when the browser regains connectivity.
   window.addEventListener('online', () => {
     console.log('Network back online, resyncing time.');
+    consecutiveFailures = 0; // reset backoff so we try promptly
     runSync();
   });
 
@@ -547,15 +604,22 @@
   // (instead of waiting for the next throttled tick) and re-sync with
   // the internet time source, since the local clock may have drifted
   // or the device may have been asleep for a while.
+  //
+  // Also listen for the Page Lifecycle "resume" event (when a frozen
+  // page is thawed) which is especially relevant after deep sleep on
+  // mobile.
   function handleResume() {
-    if (document.visibilityState === 'visible') {
+    if (document.visibilityState === 'visible' || document.visibilityState === undefined) {
       draw();
-      runSync().then(draw);
+      consecutiveFailures = 0; // allow aggressive retries after wake
+      runSync();               // runSync itself redraws on success
     }
   }
   document.addEventListener('visibilitychange', handleResume);
   window.addEventListener('focus', handleResume);
   window.addEventListener('pageshow', handleResume);
+  // Page Lifecycle API (supported on modern Chrome / Android)
+  document.addEventListener('resume', handleResume);
 
   // ----- Sound ON/OFF setting (persisted in localStorage) -----
   const SOUND_STORAGE_KEY = 'hkclock_sound_enabled';
