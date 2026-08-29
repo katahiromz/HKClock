@@ -11,6 +11,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
@@ -20,11 +22,13 @@
 #include <cmath>
 #include <ctime>
 #include <string>
+#include <atomic>
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "ws2_32.lib")
 
 using namespace Gdiplus;
 
@@ -174,6 +178,193 @@ static void HandEndpoint(float cx, float cy, float length, float angleDeg,
 }
 
 // -------------------------------------------------------------------------
+// Internet time sync (SNTP, RFC 4330)
+// -------------------------------------------------------------------------
+// Difference in seconds between the NTP epoch (1900-01-01) and the
+// FILETIME epoch (1601-01-01).
+static const ULONGLONG NTP_TO_FILETIME_EPOCH_SECONDS = 9435484800ULL;
+
+// Candidate NTP servers, tried in order until one answers.
+static const wchar_t* g_ntpServers[] = {
+    L"ntp.nict.jp",       // Japan (NICT)
+    L"time.windows.com",  // Microsoft
+    L"pool.ntp.org",      // Global pool
+};
+
+// How far the true (network) time is ahead of this PC's system clock,
+// expressed in 100-ns units (FILETIME ticks). Applied on top of
+// GetSystemTimeAsFileTime() to obtain a synced time.
+static std::atomic<LONGLONG> g_llTimeOffset100ns{ 0 };
+static std::atomic<bool>     g_bTimeSynced{ false };
+
+static HANDLE g_hSyncThread = nullptr;
+static HANDLE g_hSyncStopEvent = nullptr;
+
+// Convert a big-endian 32-bit NTP seconds/fraction pair (as found at
+// 'p') into a FILETIME-domain 100ns tick count (as ULONGLONG).
+static ULONGLONG NtpTimestampToFileTimeTicks(const BYTE* p)
+{
+    ULONG secs, frac;
+    memcpy(&secs, p, 4);
+    memcpy(&frac, p + 4, 4);
+    secs = ntohl(secs);
+    frac = ntohl(frac);
+
+    ULONGLONG ticks = (static_cast<ULONGLONG>(secs) + NTP_TO_FILETIME_EPOCH_SECONDS) * 10000000ULL;
+    ticks += (static_cast<ULONGLONG>(frac) * 10000000ULL) >> 32;
+    return ticks;
+}
+
+static ULONGLONG FileTimeToTicks(const FILETIME& ft)
+{
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    return uli.QuadPart;
+}
+
+// Queries a single NTP server. On success, fills 'offset100ns' with
+// (server time - local time) in 100ns units and returns true.
+static bool QuerySntpServer(const wchar_t* host, LONGLONG& offset100ns)
+{
+    ADDRINFOW hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+
+    ADDRINFOW* result = nullptr;
+    if (GetAddrInfoW(host, L"123", &hints, &result) != 0 || !result)
+        return false;
+
+    SOCKET sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (sock == INVALID_SOCKET) {
+        FreeAddrInfoW(result);
+        return false;
+    }
+
+    DWORD timeoutMs = 2500;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeoutMs, sizeof(timeoutMs));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeoutMs, sizeof(timeoutMs));
+
+    BYTE packet[48] = {};
+    packet[0] = 0x1B; // LI=0, VN=3, Mode=3 (client)
+
+    FILETIME ftT1;
+    GetSystemTimeAsFileTime(&ftT1);
+    ULONGLONG t1 = FileTimeToTicks(ftT1);
+
+    bool ok = false;
+    if (sendto(sock, (const char*)packet, sizeof(packet), 0,
+               result->ai_addr, (int)result->ai_addrlen) == sizeof(packet))
+    {
+        BYTE reply[48];
+        sockaddr_storage from = {};
+        int fromLen = sizeof(from);
+        int n = recvfrom(sock, (char*)reply, sizeof(reply), 0, (sockaddr*)&from, &fromLen);
+
+        FILETIME ftT4;
+        GetSystemTimeAsFileTime(&ftT4);
+        ULONGLONG t4 = FileTimeToTicks(ftT4);
+
+        if (n == sizeof(reply)) {
+            ULONGLONG t2 = NtpTimestampToFileTimeTicks(reply + 32); // server receive time
+            ULONGLONG t3 = NtpTimestampToFileTimeTicks(reply + 40); // server transmit time
+
+            // Standard SNTP clock offset formula:
+            //   offset = ((T2 - T1) + (T3 - T4)) / 2
+            LONGLONG off = (static_cast<LONGLONG>(t2 - t1) + static_cast<LONGLONG>(t3 - t4)) / 2;
+            offset100ns = off;
+            ok = true;
+        }
+    }
+
+    closesocket(sock);
+    FreeAddrInfoW(result);
+    return ok;
+}
+
+// Tries each known server in turn; stores the resulting offset globally.
+static bool SyncTimeOnce()
+{
+    for (const wchar_t* host : g_ntpServers) {
+        LONGLONG offset;
+        if (QuerySntpServer(host, offset)) {
+            g_llTimeOffset100ns.store(offset);
+            g_bTimeSynced.store(true);
+            return true;
+        }
+    }
+    return false;
+}
+
+static DWORD WINAPI SntpSyncThreadProc(LPVOID)
+{
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return 0;
+
+    for (;;) {
+        bool ok = SyncTimeOnce();
+
+        // Re-sync soon after a failure, otherwise every 30 minutes.
+        DWORD waitMs = ok ? (30 * 60 * 1000) : (60 * 1000);
+        if (WaitForSingleObject(g_hSyncStopEvent, waitMs) == WAIT_OBJECT_0)
+            break;
+    }
+
+    WSACleanup();
+    return 0;
+}
+
+static DWORD WINAPI OneShotSyncThreadProc(LPVOID)
+{
+    SyncTimeOnce();
+    return 0;
+}
+
+static void StartTimeSync()
+{
+    g_hSyncStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    g_hSyncThread = CreateThread(nullptr, 0, SntpSyncThreadProc, nullptr, 0, nullptr);
+}
+
+static void StopTimeSync()
+{
+    if (g_hSyncStopEvent)
+        SetEvent(g_hSyncStopEvent);
+    if (g_hSyncThread) {
+        WaitForSingleObject(g_hSyncThread, 3000);
+        CloseHandle(g_hSyncThread);
+        g_hSyncThread = nullptr;
+    }
+    if (g_hSyncStopEvent) {
+        CloseHandle(g_hSyncStopEvent);
+        g_hSyncStopEvent = nullptr;
+    }
+}
+
+// Local time, corrected by the last known internet-time offset.
+// Falls back to the plain system clock until the first successful sync.
+static void GetSyncedLocalTime(SYSTEMTIME& st)
+{
+    FILETIME ftUtc;
+    GetSystemTimeAsFileTime(&ftUtc);
+
+    ULARGE_INTEGER uli;
+    uli.LowPart = ftUtc.dwLowDateTime;
+    uli.HighPart = ftUtc.dwHighDateTime;
+    uli.QuadPart += static_cast<ULONGLONG>(g_llTimeOffset100ns.load());
+
+    FILETIME ftAdjustedUtc;
+    ftAdjustedUtc.dwLowDateTime = uli.LowPart;
+    ftAdjustedUtc.dwHighDateTime = uli.HighPart;
+
+    FILETIME ftLocal;
+    FileTimeToLocalFileTime(&ftAdjustedUtc, &ftLocal);
+    FileTimeToSystemTime(&ftLocal, &st);
+}
+
+// -------------------------------------------------------------------------
 // Drawing
 // -------------------------------------------------------------------------
 static void DrawClock(Graphics& g, int clientW, int clientH, float scale)
@@ -311,9 +502,9 @@ static void DrawClock(Graphics& g, int clientW, int clientH, float scale)
         }
     }
 
-    // Current local time
+    // Current local time (corrected by internet time sync, if available)
     SYSTEMTIME st;
-    GetLocalTime(&st);
+    GetSyncedLocalTime(st);
 
 #if 0
     st.wHour = 6;
@@ -507,7 +698,7 @@ static int g_lastPlayedSecond = -1; // last wSecond we already played a sound fo
 static void CheckAndPlayTick()
 {
     SYSTEMTIME st;
-    GetLocalTime(&st);
+    GetSyncedLocalTime(st);
 
     // Only fire once per second, right when the second actually changes.
     if (static_cast<int>(st.wSecond) == g_lastPlayedSecond)
@@ -640,12 +831,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 AppendMenuW(hMenu, MF_STRING, 103, L"最小化(&N)");
             AppendMenuW(hMenu, MF_STRING, 101, bTitleBar ? L"タイトルバーを隠す(&H)" : L"タイトルバーを表示する(&S)");
             AppendMenuW(hMenu, MF_STRING, 104, L"音声を再生");
+            AppendMenuW(hMenu, MF_STRING, 106,
+                g_bTimeSynced.load() ? L"インターネット時刻に同期済み(&T)" : L"インターネット時刻に同期(&T)");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, 100, L"閉じる(&C)\tAlt+F4");
 
             MENUITEMINFOW info = { sizeof(info), MIIM_STATE };
             info.fState = MFS_GRAYED;
             SetMenuItemInfoW(hMenu, 105, FALSE, &info);
+            if (g_bTimeSynced.load())
+                SetMenuItemInfoW(hMenu, 106, FALSE, &info);
 
             if (g_bPlaySound)
                 CheckMenuItem(hMenu, 104, MF_CHECKED);
@@ -694,6 +889,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 break;
             case 105:
                 break;
+            case 106:
+                // Kick off an immediate one-shot resync on a worker thread
+                // so the UI thread never blocks on network I/O.
+                CloseHandle(CreateThread(nullptr, 0, OneShotSyncThreadProc, nullptr, 0, nullptr));
+                break;
             }
         }
         return 0;
@@ -729,6 +929,7 @@ WinMain(
     }
 
     LoadSettings();
+    StartTimeSync();
 
     const wchar_t CLASS_NAME[] = L"katahiromz's AnalogClockWnd";
 
@@ -789,6 +990,7 @@ WinMain(
     }
 
     SaveSettings();
+    StopTimeSync();
 
     GdiplusShutdown(gdiplusToken);
     return static_cast<int>(msg.wParam);
