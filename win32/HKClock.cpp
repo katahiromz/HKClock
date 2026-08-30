@@ -87,6 +87,7 @@ SIZE g_siz = { CW_USEDEFAULT, CW_USEDEFAULT };
 BOOL g_bMaximized = FALSE;
 BOOL g_bNoTitleBar = FALSE;
 BOOL g_bPlaySound = FALSE;
+BOOL g_bTopMost = TRUE;
 
 BOOL LoadSettings(VOID)
 {
@@ -95,6 +96,7 @@ BOOL LoadSettings(VOID)
     g_bMaximized = FALSE;
     g_bNoTitleBar = FALSE;
     g_bPlaySound = FALSE;
+    g_bTopMost = TRUE;
 
     HKEY hKey;
     LSTATUS error;
@@ -133,6 +135,10 @@ BOOL LoadSettings(VOID)
     error = RegQueryValueExW(hKey, L"PlaySound", nullptr, nullptr, (PBYTE)&dwValue, &cbValue);
     if (!error)
         g_bPlaySound = !!dwValue;
+    cbValue = sizeof(dwValue);
+    error = RegQueryValueExW(hKey, L"TopMost", nullptr, nullptr, (PBYTE)&dwValue, &cbValue);
+    if (!error)
+        g_bTopMost = !!dwValue;
 
     RegCloseKey(hKey);
     return TRUE;
@@ -154,6 +160,7 @@ BOOL SaveSettings(VOID)
     RegSetValueExW(hKey, L"Maximized", 0, REG_DWORD, (PBYTE)&g_bMaximized, sizeof(g_bMaximized));
     RegSetValueExW(hKey, L"NoTitleBar", 0, REG_DWORD, (PBYTE)&g_bNoTitleBar, sizeof(g_bNoTitleBar));
     RegSetValueExW(hKey, L"PlaySound", 0, REG_DWORD, (PBYTE)&g_bPlaySound, sizeof(g_bPlaySound));
+    RegSetValueExW(hKey, L"TopMost", 0, REG_DWORD, (PBYTE)&g_bTopMost, sizeof(g_bTopMost));
 
     RegCloseKey(hKey);
     return TRUE;
@@ -716,6 +723,105 @@ static void CheckAndPlayTick()
     PlaySoundW(file, g_hInst, SND_RESOURCE | SND_ASYNC | SND_NOSTOP);
 }
 
+void OnNCRButtonDown(HWND hwnd)
+{
+    BOOL bZoomed = IsZoomed(hwnd);
+    BOOL bIconic = IsIconic(hwnd);
+    DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
+    DWORD exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    HMENU hMenu = CreatePopupMenu();
+    BOOL bTitleBar = !!(style & WS_CAPTION);
+    BOOL bTopMost = !!(exstyle & WS_EX_TOPMOST);
+    AppendMenuW(hMenu, MF_STRING, 105, L"HK時計 Version 1.0.1");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, 102, (bZoomed | bIconic) ? L"元のサイズに戻す(&R)" : L"最大化(&X)");
+    if (!bZoomed && !bIconic)
+        AppendMenuW(hMenu, MF_STRING, 103, L"最小化(&N)");
+    AppendMenuW(hMenu, MF_STRING, 101, L"タイトルバーを隠す(&H)");
+    AppendMenuW(hMenu, MF_STRING, 107, L"最前面に表示する");
+    AppendMenuW(hMenu, MF_STRING, 104, L"音声を再生");
+    AppendMenuW(hMenu, MF_STRING, 106,
+        g_bTimeSynced.load() ? L"インターネット時刻に同期済み(&T)" : L"インターネット時刻に同期(&T)");
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(hMenu, MF_STRING, 100, L"閉じる(&C)\tAlt+F4");
+
+    MENUITEMINFOW info = { sizeof(info), MIIM_STATE };
+    info.fState = MFS_GRAYED;
+    SetMenuItemInfoW(hMenu, 105, FALSE, &info);
+    if (g_bTimeSynced.load())
+        SetMenuItemInfoW(hMenu, 106, FALSE, &info);
+    if (!bTitleBar)
+        CheckMenuItem(hMenu, 101, MF_CHECKED);
+    if (bTopMost)
+        CheckMenuItem(hMenu, 107, MF_CHECKED);
+    if (g_bPlaySound)
+        CheckMenuItem(hMenu, 104, MF_CHECKED);
+
+    POINT pt;
+    GetCursorPos(&pt);
+
+    SetForegroundWindow(hwnd);
+    INT nCmd = (INT)TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_RETURNCMD,
+                                   pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(hMenu);
+
+    switch (nCmd)
+    {
+    case 100:
+        DestroyWindow(hwnd);
+        break;
+    case 101:
+        {
+            bTitleBar = !bTitleBar;
+            if (bTitleBar)
+                style |= WS_CAPTION;
+            else
+                style &= ~WS_CAPTION;
+            SetWindowLongW(hwnd, GWL_STYLE, style);
+            SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_DRAWFRAME);
+            if (bZoomed)
+                ShowWindow(hwnd, SW_MAXIMIZE);
+            g_bNoTitleBar = !bTitleBar;
+        }
+        break;
+    case 102:
+        if (bZoomed || bIconic)
+            ShowWindow(hwnd, SW_RESTORE);
+        else
+            ShowWindow(hwnd, SW_MAXIMIZE);
+        break;
+    case 103:
+        ShowWindow(hwnd, SW_MINIMIZE);
+        break;
+    case 104:
+        g_bPlaySound = !g_bPlaySound;
+        if (!g_bPlaySound)
+            PlaySoundW(nullptr, nullptr, SND_PURGE);
+        break;
+    case 105:
+        break;
+    case 106:
+        // Kick off an immediate one-shot resync on a worker thread
+        // so the UI thread never blocks on network I/O.
+        CloseHandle(CreateThread(nullptr, 0, OneShotSyncThreadProc, nullptr, 0, nullptr));
+        break;
+    case 107:
+        {
+            bTopMost = !bTopMost;
+            if (bTopMost)
+                exstyle |= WS_EX_TOPMOST;
+            else
+                exstyle &= ~WS_EX_TOPMOST;
+            SetWindowLongW(hwnd, GWL_EXSTYLE, exstyle);
+            SetWindowPos(hwnd, bTopMost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE);
+            g_bTopMost = bTopMost;
+        }
+        break;
+    }
+}
+
 // -------------------------------------------------------------------------
 // Window procedure
 // -------------------------------------------------------------------------
@@ -734,7 +840,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         SetTimer(hwnd, 1, 200, nullptr); // ~5 Hz is enough for stepped second hand
         SetTimer(hwnd, 2, 15, nullptr);  // fine-grained polling so ticks fire right on the second
-        return 0;
+        break;
 
     case WM_TIMER:
         if (wParam == 2) {
@@ -742,7 +848,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         } else {
             InvalidateRect(hwnd, nullptr, FALSE);
         }
-        return 0;
+        break;
 
     case WM_POWERBROADCAST:
         // The system just woke up from sleep/hibernation. The NTP offset
@@ -757,28 +863,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         return TRUE;
 
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        if (HDC hdc = BeginPaint(hwnd, &ps))
+    case WM_PAINT:
         {
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int w = rc.right - rc.left;
-            int h = rc.bottom - rc.top;
+            PAINTSTRUCT ps;
+            if (HDC hdc = BeginPaint(hwnd, &ps))
+            {
+                RECT rc;
+                GetClientRect(hwnd, &rc);
+                int w = rc.right - rc.left;
+                int h = rc.bottom - rc.top;
 
-            // Double-buffer with GDI+
-            Bitmap buffer(w, h, PixelFormat32bppARGB);
-            Graphics g(&buffer);
-            float scale = GetWindowScale(hwnd);
-            DrawClock(g, w, h, scale);
+                // Double-buffer with GDI+
+                Bitmap buffer(w, h, PixelFormat32bppARGB);
+                Graphics g(&buffer);
+                float scale = GetWindowScale(hwnd);
+                DrawClock(g, w, h, scale);
 
-            Graphics screen(hdc);
-            screen.DrawImage(&buffer, 0, 0);
+                Graphics screen(hdc);
+                screen.DrawImage(&buffer, 0, 0);
 
-            EndPaint(hwnd, &ps);
+                EndPaint(hwnd, &ps);
+            }
         }
-        return 0;
-    }
+        break;
 
     case WM_GETMINMAXINFO:
         {
@@ -794,31 +901,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_MOVE:
         {
             if (IsZoomed(hwnd) || IsIconic(hwnd))
-                return 0;
+                break;
             RECT rc;
             GetWindowRect(hwnd, &rc);
             g_pt.x = rc.left;
             g_pt.y = rc.top;
         }
-        return 0;
+        break;
 
     case WM_SIZE:
         {
             g_bMaximized = IsZoomed(hwnd);
             if (g_bMaximized || IsIconic(hwnd))
-                return 0;
+                break;
             RECT rc;
             GetWindowRect(hwnd, &rc);
             g_siz.cx = rc.right - rc.left;
             g_siz.cy = rc.bottom - rc.top;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
-        return 0;
+        break;
 
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE)
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
-        return 0;
+        break;
 
     case WM_NCHITTEST:
         {
@@ -829,93 +936,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
     case WM_NCRBUTTONDOWN:
-        {
-            BOOL bZoomed = IsZoomed(hwnd);
-            BOOL bIconic = IsIconic(hwnd);
-            DWORD style = GetWindowLongW(hwnd, GWL_STYLE);
-            HMENU hMenu = CreatePopupMenu();
-            BOOL bTitleBar = (style & WS_CAPTION);
-            AppendMenuW(hMenu, MF_STRING, 105, L"HK時計 Version 1.0.1");
-            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(hMenu, MF_STRING, 102, (bZoomed | bIconic) ? L"元のサイズに戻す(&R)" : L"最大化(&X)");
-            if (!bZoomed && !bIconic)
-                AppendMenuW(hMenu, MF_STRING, 103, L"最小化(&N)");
-            AppendMenuW(hMenu, MF_STRING, 101, bTitleBar ? L"タイトルバーを隠す(&H)" : L"タイトルバーを表示する(&S)");
-            AppendMenuW(hMenu, MF_STRING, 104, L"音声を再生");
-            AppendMenuW(hMenu, MF_STRING, 106,
-                g_bTimeSynced.load() ? L"インターネット時刻に同期済み(&T)" : L"インターネット時刻に同期(&T)");
-            AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuW(hMenu, MF_STRING, 100, L"閉じる(&C)\tAlt+F4");
-
-            MENUITEMINFOW info = { sizeof(info), MIIM_STATE };
-            info.fState = MFS_GRAYED;
-            SetMenuItemInfoW(hMenu, 105, FALSE, &info);
-            if (g_bTimeSynced.load())
-                SetMenuItemInfoW(hMenu, 106, FALSE, &info);
-
-            if (g_bPlaySound)
-                CheckMenuItem(hMenu, 104, MF_CHECKED);
-
-            POINT pt;
-            GetCursorPos(&pt);
-
-            SetForegroundWindow(hwnd);
-            INT nCmd = (INT)TrackPopupMenu(hMenu, TPM_RIGHTBUTTON | TPM_LEFTALIGN | TPM_RETURNCMD,
-                                           pt.x, pt.y, 0, hwnd, nullptr);
-            DestroyMenu(hMenu);
-
-            switch (nCmd)
-            {
-            case 100:
-                DestroyWindow(hwnd);
-                break;
-            case 101:
-                {
-                    bTitleBar = !bTitleBar;
-                    if (bTitleBar)
-                        style |= WS_CAPTION;
-                    else
-                        style &= ~WS_CAPTION;
-                    SetWindowLongW(hwnd, GWL_STYLE, style);
-                    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_DRAWFRAME);
-                    if (bZoomed)
-                        ShowWindow(hwnd, SW_MAXIMIZE);
-                    g_bNoTitleBar = !bTitleBar;
-                }
-                break;
-            case 102:
-                if (bZoomed || bIconic)
-                    ShowWindow(hwnd, SW_RESTORE);
-                else
-                    ShowWindow(hwnd, SW_MAXIMIZE);
-                break;
-            case 103:
-                ShowWindow(hwnd, SW_MINIMIZE);
-                break;
-            case 104:
-                g_bPlaySound = !g_bPlaySound;
-                if (!g_bPlaySound)
-                    PlaySoundW(nullptr, nullptr, SND_PURGE);
-                break;
-            case 105:
-                break;
-            case 106:
-                // Kick off an immediate one-shot resync on a worker thread
-                // so the UI thread never blocks on network I/O.
-                CloseHandle(CreateThread(nullptr, 0, OneShotSyncThreadProc, nullptr, 0, nullptr));
-                break;
-            }
-        }
-        return 0;
+        OnNCRButtonDown(hwnd);
+        break;
 
     case WM_DESTROY:
         KillTimer(hwnd, 1);
         KillTimer(hwnd, 2);
         PostQuitMessage(0);
-        return 0;
+        break;
+
+    default:
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+
+    return 0;
 }
 
 // -------------------------------------------------------------------------
@@ -978,7 +1012,7 @@ WinMain(
     BOOL bMaximized = g_bMaximized;
     if (bMaximized)
         style |= WS_MAXIMIZE;
-    HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST,
+    HWND hwnd = CreateWindowExW(WS_EX_LAYERED | (g_bTopMost ? WS_EX_TOPMOST : 0),
         CLASS_NAME, L"HK時計", style, g_pt.x, g_pt.y, g_siz.cx, g_siz.cy,
         nullptr, nullptr, hInstance, nullptr);
 
