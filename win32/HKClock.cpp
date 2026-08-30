@@ -5,8 +5,6 @@
 // Simple analog clock with C++11 / Win32 / GDI+
 // - Hour / minute / second hands
 // - Anti-aliased
-// - Minute hand steps (no continuous sweep)
-// - Second hand steps (no continuous sweep)
 // - High-DPI aware (Per-Monitor V2)
 
 #define WIN32_LEAN_AND_MEAN
