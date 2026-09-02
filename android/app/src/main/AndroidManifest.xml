@@ -46,8 +46,10 @@
         </activity>
 
         <!-- HK時計のホーム画面ウィジェット -->
+        <!-- 小サイズ -->
         <receiver
-            android:name=".HKClockWidgetProvider"
+            android:name=".HKClockWidgetProviderSmall"
+            android:label="@string/widget_size_small"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -55,12 +57,47 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
-                <!-- カスタムTICKを明示（明示Intentでも保険になる） -->
                 <action android:name="com.katahiromz.hkclock.ACTION_WIDGET_TICK" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/hk_clock_widget_info" />
+                android:resource="@xml/hk_clock_widget_info_small" />
+        </receiver>
+
+        <!-- 中サイズ -->
+        <receiver
+            android:name=".HKClockWidgetProviderMedium"
+            android:label="@string/widget_size_medium"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="com.katahiromz.hkclock.ACTION_WIDGET_TICK" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/hk_clock_widget_info_medium" />
+        </receiver>
+
+        <!-- 大サイズ -->
+        <receiver
+            android:name=".HKClockWidgetProviderLarge"
+            android:label="@string/widget_size_large"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="com.katahiromz.hkclock.ACTION_WIDGET_TICK" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/hk_clock_widget_info_large" />
         </receiver>
     </application>
 </manifest>

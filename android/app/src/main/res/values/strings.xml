@@ -16,6 +16,9 @@
     <string name="progress_bar">ProgressBar</string>
     <string name="now_starting">Loading HK Clock...</string>
     <string name="needs_ignore_battery_optimization">To ensure this clock widget continues to run accurately in the background, we recommend excluding it from battery optimization. Please tap "Allow" in the following dialog.</string>
+    <string name="widget_size_small">HK Clock (Small)</string>
+    <string name="widget_size_medium">HK Clock (Medium)</string>
+    <string name="widget_size_large">HK Clock (Large)</string>
 
     <!-- URLs -->
     <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>

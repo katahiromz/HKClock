@@ -18,7 +18,7 @@ import android.util.TypedValue
 import android.widget.RemoteViews
 import java.util.Calendar
 
-class HKClockWidgetProvider : AppWidgetProvider() {
+open class HKClockWidgetProvider : AppWidgetProvider() {
 
     companion object {
         private const val ACTION_TICK = "com.katahiromz.hkclock.ACTION_WIDGET_TICK"
@@ -32,12 +32,18 @@ class HKClockWidgetProvider : AppWidgetProvider() {
         // 配置されているすべてのウィジェットを再描画する。
         fun updateAllWidgets(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
-            val ids = manager.getAppWidgetIds(ComponentName(context, HKClockWidgetProvider::class.java))
-            for (id in ids) {
-                updateWidget(context, manager, id)
+            val classes = listOf(
+                HKClockWidgetProvider::class.java,
+                HKClockWidgetProviderSmall::class.java,
+                HKClockWidgetProviderMedium::class.java,
+                HKClockWidgetProviderLarge::class.java
+            )
+            for (cls in classes) {
+                val ids = manager.getAppWidgetIds(ComponentName(context, cls))
+                for (id in ids) {
+                    updateWidget(context, manager, id)
+                }
             }
-
-            // 電池最適化がまだ有効なら、次回アプリ起動時に再誘導するフラグを立てる
             checkAndMarkBatteryPromptIfNeeded(context)
         }
 
@@ -300,3 +306,8 @@ class HKClockWidgetProvider : AppWidgetProvider() {
         cancelTick(context)
     }
 }
+
+// サイズ違いのエントリ用（中身はすべて親クラスと同じ）
+class HKClockWidgetProviderSmall : HKClockWidgetProvider()
+class HKClockWidgetProviderMedium : HKClockWidgetProvider()
+class HKClockWidgetProviderLarge : HKClockWidgetProvider()
