@@ -15,7 +15,7 @@
     <string name="web_view">WebView</string>
     <string name="progress_bar">ProgressBar</string>
     <string name="now_starting">Loading HK Clock...</string>
-    <string name="needs_ignore_battery_optimization">To ensure this clock widget continues to run accurately in the background, we recommend excluding it from battery optimization. Is that okay?</string>
+    <string name="needs_ignore_battery_optimization">To ensure this clock widget continues to run accurately in the background, we recommend excluding it from battery optimization. Please tap "Allow" in the following dialog.</string>
 
     <!-- URLs -->
     <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>
