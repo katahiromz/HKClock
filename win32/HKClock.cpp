@@ -732,7 +732,7 @@ void OnNCRButtonDown(HWND hwnd)
     HMENU hMenu = CreatePopupMenu();
     BOOL bTitleBar = !!(style & WS_CAPTION);
     BOOL bTopMost = !!(exstyle & WS_EX_TOPMOST);
-    AppendMenuW(hMenu, MF_STRING, 105, L"HK時計 Version 1.0.1");
+    AppendMenuW(hMenu, MF_STRING, 105, L"HK時計 Version 1.0.2");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, 102, (bZoomed | bIconic) ? L"元のサイズに戻す(&R)" : L"最大化(&X)");
     if (!bZoomed && !bIconic)

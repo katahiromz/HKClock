@@ -49,8 +49,8 @@ LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
 // RT_VERSION
 
 1 VERSIONINFO
-FILEVERSION     1, 0, 1, 0
-PRODUCTVERSION  1, 0, 1, 0
+FILEVERSION     1, 0, 2, 0
+PRODUCTVERSION  1, 0, 2, 0
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 {
@@ -60,10 +60,10 @@ FILETYPE        VFT_APP
         {
             VALUE "CompanyName", "片山博文MZ"
             VALUE "FileDescription", "HK時計"
-            VALUE "FileVersion", "1.0.1"
+            VALUE "FileVersion", "1.0.2"
             VALUE "LegalCopyright", "Copyright (C) 2026 片山博文MZ"
             VALUE "ProductName", "HK時計"
-            VALUE "ProductVersion", "1.0.1"
+            VALUE "ProductVersion", "1.0.2"
         }
     }
     BLOCK "VarFileInfo"

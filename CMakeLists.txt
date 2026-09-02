@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # project name, version, and languages
-project(HKClock VERSION 1.0 LANGUAGES CXX RC)
+project(HKClock VERSION 1.0.2 LANGUAGES CXX RC)
 
 # static link of CRT
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
