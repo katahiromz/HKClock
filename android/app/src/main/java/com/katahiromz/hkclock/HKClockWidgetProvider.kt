@@ -105,11 +105,34 @@ class HKClockWidgetProvider : AppWidgetProvider() {
             return PendingIntent.getBroadcast(context, 0, intent, flags)
         }
 
+        // Android 12(S)以降で「正確なアラーム」を実際に発行できるかどうか。
+        // 本アプリは時計ウィジェットなのでAndroidManifest.xmlに
+        //   <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+        // を追加すれば、この許可はインストール時に自動付与され常にtrueになる。
+        // (Google Playの「時計・アラーム」用途ポリシーに該当するため使用可)
+        // 何らかの理由でUSE_EXACT_ALARMが使えない端末/審査環境でも動くよう、
+        // SCHEDULE_EXACT_ALARMの実行時許可があるかを併せて確認しておく。
+        private fun canScheduleExact(context: Context): Boolean {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                alarmManager.canScheduleExactAlarms()
+            } else {
+                // Android 11以下は特別な許可なしに正確なアラームを予約できる。
+                true
+            }
+        }
+
         // 次の30秒境界（:00 または :30）に合わせてアラームを1回だけセットする。
         // これにより時刻表示の誤差を最大30秒以内に抑える。
         // 呼ばれるたびに次の境界を予約し直す。
-        // setExactAndAllowWhileIdleは要SCHEDULE_EXACT_ALARM許可(Android12+)なので、
-        // ここでは許可不要なsetAndAllowWhileIdleを使う(Doze中は多少ずれる場合がある)。
+        //
+        // 【重要】setAndAllowWhileIdle等の「不正確」なアラームは、Doze/App Standby中に
+        // OSがまとめて発火させる「メンテナンスウィンドウ」まで遅延することがあり、
+        // その間隔は端末がアイドルな時間が長いほど数分〜十数分に広がっていく。
+        // 本ウィジェットは「30秒ごとに次の1回を予約し直す」自己再帰的な仕組みのため、
+        // 不正確アラームだとこの遅延がそのまま「分針が全く動かない」症状に直結してしまう。
+        // そのため可能な限りsetExactAndAllowWhileIdleを使い、権限が無い場合のみ
+        // フォールバックとしてsetAndAllowWhileIdleを使う。
         fun scheduleNextTick(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val cal = Calendar.getInstance()
@@ -125,10 +148,32 @@ class HKClockWidgetProvider : AppWidgetProvider() {
             val triggerAt = SystemClock.elapsedRealtime() + delay
             val pendingIntent = tickPendingIntent(context)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && canScheduleExact(context) -> {
+                        alarmManager.setExactAndAllowWhileIdle(
+                            AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
+                        )
+                    }
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                        // 正確なアラームの許可が無い端末向けフォールバック。
+                        // Doze中はある程度ずれ得るが、次回のtickで自動的に補正される。
+                        alarmManager.setAndAllowWhileIdle(
+                            AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
+                        )
+                    }
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT -> {
+                        // KitKat以降はsetも不正確化されているため、明示的にsetExactを使う。
+                        alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                    }
+                    else -> {
+                        alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                    }
+                }
+            } catch (e: SecurityException) {
+                // 端末/OEMの制限等でSecurityExceptionが飛んでも、ここで再帰が
+                // 完全に止まってしまわないようフォールバックしておく。
                 alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
-            } else {
-                alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
             }
         }
 
