@@ -271,6 +271,9 @@ class HKClockWidgetProvider : AppWidgetProvider() {
         appWidgetId: Int, newOptions: Bundle?
     ) {
         updateWidget(context, appWidgetManager, appWidgetId)
+
+        // リサイズ中でも更新チェーンが切れないよう、必ず次の分境界を再スケジュールする
+        scheduleNextTick(context)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
