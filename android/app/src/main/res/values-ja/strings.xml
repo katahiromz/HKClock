@@ -15,6 +15,7 @@
     <string name="web_view">ウェブ ビュー</string>
     <string name="progress_bar">プログレス バー</string>
     <string name="now_starting">HK時計を起動中...</string>
+    <string name="needs_ignore_battery_optimization">この時計ウィジェットが裏で正確に動き続けるために、バッテリー最適化の対象から除外することをおすすめします。よろしいですか？</string>
 
     <!-- URLs -->
     <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>

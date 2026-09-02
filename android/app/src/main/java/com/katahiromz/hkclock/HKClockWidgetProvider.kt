@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.TypedValue
 import android.widget.RemoteViews
@@ -34,6 +35,97 @@ class HKClockWidgetProvider : AppWidgetProvider() {
             val ids = manager.getAppWidgetIds(ComponentName(context, HKClockWidgetProvider::class.java))
             for (id in ids) {
                 updateWidget(context, manager, id)
+            }
+
+            // 電池最適化がまだ有効なら、次回アプリ起動時に再誘導するフラグを立てる
+            checkAndMarkBatteryPromptIfNeeded(context)
+        }
+
+        private fun checkAndMarkBatteryPromptIfNeeded(context: Context) {
+            val now = System.currentTimeMillis()
+            val lastUpdate = MainRepository.getLastWidgetUpdateTime(context)
+
+            // 今回の更新時刻を記録
+            MainRepository.setLastWidgetUpdateTime(context, now)
+
+            val DELAY_THRESHOLD_MS = 2 * 60 * 1000L   // 2分以上遅延したら「止まっていた」と判定
+
+            val wasDelayed = lastUpdate > 0L && (now - lastUpdate) > DELAY_THRESHOLD_MS
+
+            if (wasDelayed) {
+                // 実際に分針が止まっていたので再誘導フラグを立てる
+                MainRepository.setNeedBatteryPrompt(context, true)
+                android.util.Log.w(
+                    "HKClockWidget",
+                    "Widget update delayed by ${(now - lastUpdate) / 1000}s → force resume + mark battery prompt"
+                )
+
+                // 強制的に更新チェーンを再開させる
+                forceResumeTick(context)
+            }
+
+            // 電池最適化が除外済みならフラグをクリア
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && pm.isIgnoringBatteryOptimizations(context.packageName)) {
+                MainRepository.setNeedBatteryPrompt(context, false)
+            }
+        }
+
+        /**
+         * 分針が止まっていた場合に、アラームを強制再スケジュールして動きを再開させる。
+         * setAlarmClock を併用することで Doze 中でもより確実に発火しやすくする。
+         */
+        private fun forceResumeTick(context: Context) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pendingIntent = tickPendingIntent(context)
+
+            // 既存のアラームをキャンセル
+            alarmManager.cancel(pendingIntent)
+
+            // 次の分境界を計算
+            val cal = Calendar.getInstance()
+            val currentMsInMinute = cal.get(Calendar.SECOND) * 1000L + cal.get(Calendar.MILLISECOND)
+            val msToNextMinute = 60_000L - currentMsInMinute
+            val delay = if (msToNextMinute <= 0L) 60_000L else msToNextMinute
+            val triggerAtElapsed = SystemClock.elapsedRealtime() + delay
+            val triggerAtRtc = System.currentTimeMillis() + delay
+
+            try {
+                // 1. Doze 耐性が高い setAlarmClock を優先（時計アプリとして適切）
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    val showIntent = PendingIntent.getActivity(
+                        context, 1,
+                        context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent(),
+                        PendingIntent.FLAG_UPDATE_CURRENT or
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+                    )
+                    val info = AlarmManager.AlarmClockInfo(triggerAtRtc, showIntent)
+                    alarmManager.setAlarmClock(info, pendingIntent)
+                } else {
+                    // 古い端末向けフォールバック
+                    alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtElapsed, pendingIntent)
+                }
+
+                // 2. バックアップ（90秒後）— 別の requestCode を使う
+                val backupTrigger = SystemClock.elapsedRealtime() + 90_000L
+                val backupIntent = PendingIntent.getBroadcast(
+                    context, 2,   // requestCode = 2
+                    Intent(context, HKClockWidgetProvider::class.java).apply { action = ACTION_TICK },
+                    PendingIntent.FLAG_UPDATE_CURRENT or
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                        backupTrigger,
+                        backupIntent
+                    )
+                }
+
+                android.util.Log.i("HKClockWidget", "Forced resume scheduled (AlarmClock + backup)")
+            } catch (e: SecurityException) {
+                android.util.Log.e("HKClockWidget", "Failed to force resume", e)
+                scheduleNextTick(context)   // 最低限のフォールバック
             }
         }
 
@@ -122,29 +214,16 @@ class HKClockWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        // 次の30秒境界（:00 または :30）に合わせてアラームを1回だけセットする。
-        // これにより時刻表示の誤差を最大30秒以内に抑える。
-        // 呼ばれるたびに次の境界を予約し直す。
-        //
-        // 【重要】setAndAllowWhileIdle等の「不正確」なアラームは、Doze/App Standby中に
-        // OSがまとめて発火させる「メンテナンスウィンドウ」まで遅延することがあり、
-        // その間隔は端末がアイドルな時間が長いほど数分〜十数分に広がっていく。
-        // 本ウィジェットは「30秒ごとに次の1回を予約し直す」自己再帰的な仕組みのため、
-        // 不正確アラームだとこの遅延がそのまま「分針が全く動かない」症状に直結してしまう。
-        // そのため可能な限りsetExactAndAllowWhileIdleを使い、権限が無い場合のみ
-        // フォールバックとしてsetAndAllowWhileIdleを使う。
+        // 次の「分」境界（:00）に合わせてアラームを1回だけセットする。
+        // 30秒間隔だと Doze の while-idle 制限（深いIdle時は約15分）に抵触しやすく、
+        // 分針が止まる原因になるため、1分間隔に変更。
         fun scheduleNextTick(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val cal = Calendar.getInstance()
             val currentMsInMinute = cal.get(Calendar.SECOND) * 1000L + cal.get(Calendar.MILLISECOND)
-            // 次の30秒境界までのミリ秒を計算（0または30秒のタイミング）
-            val msToNextTime = if (currentMsInMinute < 30_000L) {
-                30_000L - currentMsInMinute
-            } else {
-                60_000L - currentMsInMinute
-            }
-            // ちょうど境界上にいる場合は次の境界へ（0にならないように）
-            val delay = if (msToNextTime <= 0L) 30_000L else msToNextTime
+            // 次の分境界までのミリ秒
+            val msToNextMinute = 60_000L - currentMsInMinute
+            val delay = if (msToNextMinute <= 0L) 60_000L else msToNextMinute
             val triggerAt = SystemClock.elapsedRealtime() + delay
             val pendingIntent = tickPendingIntent(context)
 
@@ -156,14 +235,11 @@ class HKClockWidgetProvider : AppWidgetProvider() {
                         )
                     }
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
-                        // 正確なアラームの許可が無い端末向けフォールバック。
-                        // Doze中はある程度ずれ得るが、次回のtickで自動的に補正される。
                         alarmManager.setAndAllowWhileIdle(
                             AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
                         )
                     }
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT -> {
-                        // KitKat以降はsetも不正確化されているため、明示的にsetExactを使う。
                         alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
                     }
                     else -> {
@@ -171,8 +247,7 @@ class HKClockWidgetProvider : AppWidgetProvider() {
                     }
                 }
             } catch (e: SecurityException) {
-                // 端末/OEMの制限等でSecurityExceptionが飛んでも、ここで再帰が
-                // 完全に止まってしまわないようフォールバックしておく。
+                // フォールバック
                 alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
             }
         }
@@ -200,9 +275,15 @@ class HKClockWidgetProvider : AppWidgetProvider() {
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        if (intent.action == ACTION_TICK) {
-            updateAllWidgets(context)
-            scheduleNextTick(context)
+        when (intent.action) {
+            ACTION_TICK,
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            Intent.ACTION_TIME_CHANGED,
+            Intent.ACTION_TIMEZONE_CHANGED -> {
+                updateAllWidgets(context)
+                scheduleNextTick(context)
+            }
         }
     }
 

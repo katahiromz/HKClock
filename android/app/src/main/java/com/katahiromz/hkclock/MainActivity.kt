@@ -6,15 +6,19 @@ package com.katahiromz.hkclock
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.os.StrictMode
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.view.View
 import android.view.WindowManager
@@ -349,6 +353,9 @@ class MainActivity : AppCompatActivity(), ValueCallback<String>, TextToSpeech.On
         // ロケールをセットする。
         setCurLocale(Locale.getDefault())
 
+        // 電池最適化の除外をユーザーに促す（時計ウィジェットが裏で動き続けるために必要）。
+        requestIgnoreBatteryOptimizationsIfNeeded()
+
         // Timberを初期化。
         initTimber()
 
@@ -395,9 +402,8 @@ class MainActivity : AppCompatActivity(), ValueCallback<String>, TextToSpeech.On
         // 明るさを復帰。
         setBrightness(screenBrightness)
 
-        // 振動を再開。
-        if (hasVibratorInitialized && oldVibratorLength > 0)
-            startVibrator(-1)
+        // ウィジェット側から再誘導フラグが立っている場合などに再表示
+        requestIgnoreBatteryOptimizationsIfNeeded()
     }
 
     // アクティビティの一時停止時。
@@ -412,10 +418,6 @@ class MainActivity : AppCompatActivity(), ValueCallback<String>, TextToSpeech.On
             // スピーチを停止する。
             stopSpeech()
         }
-
-        // 振動を停止。
-        if (hasVibratorInitialized)
-            stopVibrator()
     }
 
     // アクティビティの停止時。
@@ -425,10 +427,6 @@ class MainActivity : AppCompatActivity(), ValueCallback<String>, TextToSpeech.On
 
         // スピーチを停止する。
         stopSpeech()
-
-        // 振動を停止。
-        if (hasVibratorInitialized && oldVibratorLength > 0)
-            stopVibrator()
     }
 
     // アクティビティの破棄時。
@@ -797,6 +795,50 @@ class MainActivity : AppCompatActivity(), ValueCallback<String>, TextToSpeech.On
                     .build()
             )
         }
+    }
+
+    // endregion
+
+    /////////////////////////////////////////////////////////////////////
+    // region 電池最適化関連
+
+    // 電池最適化の対象から除外されているか確認し、除外されていなければ
+    // 理由を説明した上で設定画面へ誘導する。
+    // ウィジェット側で「止まっている可能性あり」とマークされた場合や、
+    // 一定時間経過後は再表示する。
+    private fun requestIgnoreBatteryOptimizationsIfNeeded() {
+        if (!MainRepository.shouldShowBatteryPrompt(this)) {
+            return
+        }
+
+        // 表示するので記録を更新
+        MainRepository.setAskedIgnoreBatteryOptimization(this, true)
+        MainRepository.setLastAskedIgnoreBatteryOptimization(this, System.currentTimeMillis())
+        MainRepository.setNeedBatteryPrompt(this, false) // フラグ消費
+
+        MaterialAlertDialogBuilder(this, R.style.AlertDialogTheme)
+            .setTitle(getLocString(R.string.app_name))
+            .setMessage(getLocString(R.string.needs_ignore_battery_optimization))
+            .setPositiveButton(getLocString(R.string.ok)) { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to open battery optimization settings.")
+                    // 直接設定画面を開くフォールバックも可能
+                    try {
+                        val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        startActivity(intent)
+                    } catch (e2: Exception) {
+                        Timber.w(e2, "Failed to open battery optimization list.")
+                    }
+                }
+            }
+            .setNegativeButton(getLocString(R.string.cancel), null)
+            .setCancelable(true)
+            .show()
     }
 
     // endregion

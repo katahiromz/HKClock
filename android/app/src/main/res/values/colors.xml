@@ -5,5 +5,5 @@
     <color name="themeColor">#FF3333FF</color>
     <color name="themeColorDark">#FFAAAAAA</color>
     <color name="web_start_page_background">#FF000000</color>
-    <color name="black_dialog">#FF353434</color>
+    <color name="black_dialog">#FFCCCCCC</color>
 </resources>

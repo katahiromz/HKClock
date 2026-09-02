@@ -83,9 +83,10 @@ class MyWebChromeClient(private var activity: MainActivity?, private val listene
     }
 
     // GenericAppの設定をクリアする。
+    // ※ 現在はMainRepositoryが保持する「電池最適化案内の既読フラグ」のみが対象。
     @JavascriptInterface
     fun clearSettings() {
-        activity?.let { MainRepository.clearMessageList(it) }
+        activity?.let { MainRepository.setAskedIgnoreBatteryOptimization(it, false) }
     }
 
     // 振動を開始する。
