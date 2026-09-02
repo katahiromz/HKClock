@@ -22,7 +22,8 @@ import kotlin.math.sin
 // ウィジェットは常時アニメーションできないため、呼び出された瞬間の時刻で1枚描画する。
 object ClockFaceRenderer {
 
-    private const val FACE_COLOR = -0xF2F2E7 // rgb(13, 13, 20) と同値 (0xFF0D0D14)
+    // rgb(13, 13, 20) と同値。手計算の16進リテラルは誤りやすいため Color.rgb() を直接使う。
+    private val FACE_COLOR = Color.rgb(13, 13, 20)
 
     private fun deg2rad(deg: Float): Float = (deg * PI / 180.0).toFloat()
 
@@ -87,12 +88,14 @@ object ClockFaceRenderer {
         // 影 + 縁のグラデーション + 黒い文字盤
         run {
             paint.style = Paint.Style.FILL
-            paint.color = Color.argb((0.31f * 255).toInt(), 0, 0, 0)
+            paint.color = Color.argb(Math.round(0.31f * 255f), 0, 0, 0)
             val shadowWidth = radius * 0.03f
             canvas.drawOval(
                 cx - ringW / 2f - shadowWidth, cy - ringH / 2f - shadowWidth,
                 cx + ringW / 2f + shadowWidth, cy + ringH / 2f + shadowWidth, paint
             )
+            // shader使用時もpaint.alphaが乗算されるため、影の半透明値を引きずらないよう明示的に不透明へ戻す
+            paint.alpha = 255
 
             paint.shader = LinearGradient(
                 cx, cy - ringH / 2f, cx, cy + ringH / 2f,
@@ -209,9 +212,6 @@ object ClockFaceRenderer {
     }
 
     // 分針・時針共通の「太い針」を描く。
-    // index.htmlはCanvasのevenoddフィルで穴あき多角形を作っていたが、
-    // Android CanvasはPathのevenoddが実質同じ挙動をしないため、
-    // 内側の多角形を文字盤と同じ色で塗って「くり抜いたように見せる」方式にしている。
     private fun drawFatHand(
         canvas: Canvas, paint: Paint,
         cx: Float, cy: Float, angleDeg: Float,
@@ -227,29 +227,31 @@ object ClockFaceRenderer {
         val mmmm = dir(angleDeg - 5f)
         val pppp = dir(angleDeg + 5f)
 
+        // outer/innerを1つのPathにまとめ、evenoddで本当に「穴」を開ける。
+        // これでindex.htmlのfill('evenodd')と同じく、針の内側からは
+        // 下に描いた文字盤・数字・目盛りがそのまま透けて見える。
+        val handPath = Path()
+        handPath.fillType = Path.FillType.EVEN_ODD
+
+        handPath.moveTo(cx + shaftEnd * d[0], cy + shaftEnd * d[1])
+        handPath.lineTo(cx + middle * mmm[0], cy + middle * mmm[1])
+        handPath.lineTo(cx + 0.8f * middle * mm[0], cy + 0.8f * middle * mm[1])
+        handPath.lineTo(cx + tail * ppp[0], cy + tail * ppp[1])
+        handPath.lineTo(cx + tail * mmm[0], cy + tail * mmm[1])
+        handPath.lineTo(cx + 0.8f * middle * pp[0], cy + 0.8f * middle * pp[1])
+        handPath.lineTo(cx + middle * ppp[0], cy + middle * ppp[1])
+        handPath.close()
+
+        val innerShaftEnd = shaftEnd * innerShaftFactor
+        handPath.moveTo(cx + innerShaftEnd * d[0], cy + innerShaftEnd * d[1])
+        handPath.lineTo(cx + middle * mmmm[0], cy + middle * mmmm[1])
+        handPath.lineTo(cx + 0.95f * middle * d[0], cy + 0.95f * middle * d[1])
+        handPath.lineTo(cx + middle * pppp[0], cy + middle * pppp[1])
+        handPath.close()
+
         paint.style = Paint.Style.FILL
         paint.color = Color.WHITE
-
-        val outerPath = Path()
-        outerPath.moveTo(cx + shaftEnd * d[0], cy + shaftEnd * d[1])
-        outerPath.lineTo(cx + middle * mmm[0], cy + middle * mmm[1])
-        outerPath.lineTo(cx + 0.8f * middle * mm[0], cy + 0.8f * middle * mm[1])
-        outerPath.lineTo(cx + tail * ppp[0], cy + tail * ppp[1])
-        outerPath.lineTo(cx + tail * mmm[0], cy + tail * mmm[1])
-        outerPath.lineTo(cx + 0.8f * middle * pp[0], cy + 0.8f * middle * pp[1])
-        outerPath.lineTo(cx + middle * ppp[0], cy + middle * ppp[1])
-        outerPath.close()
-        canvas.drawPath(outerPath, paint)
-
-        paint.color = FACE_COLOR
-        val innerShaftEnd = shaftEnd * innerShaftFactor
-        val innerPath = Path()
-        innerPath.moveTo(cx + innerShaftEnd * d[0], cy + innerShaftEnd * d[1])
-        innerPath.lineTo(cx + middle * mmmm[0], cy + middle * mmmm[1])
-        innerPath.lineTo(cx + 0.95f * middle * d[0], cy + 0.95f * middle * d[1])
-        innerPath.lineTo(cx + middle * pppp[0], cy + middle * pppp[1])
-        innerPath.close()
-        canvas.drawPath(innerPath, paint)
+        canvas.drawPath(handPath, paint)
 
         paint.color = Color.WHITE
         canvas.drawCircle(cx, cy, bossR1, paint)
