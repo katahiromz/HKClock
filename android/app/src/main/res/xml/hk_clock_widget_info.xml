@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HK時計ウィジェットの設定。 -->
+<!-- Copyright (c) 2023-2026 Katayama Hirofumi MZ. All Rights Reserved. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="40dp"
+    android:minResizeHeight="40dp"
+    android:maxResizeWidth="1000dp"
+    android:maxResizeHeight="1000dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="1"
+    android:initialLayout="@layout/widget_hk_clock"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:previewImage="@mipmap/ic_launcher"
+    android:description="@string/app_name"
+    android:updatePeriodMillis="1800000" />
+    <!-- サイズ換算の目安 (70dp × セル数 - 30dp):
+         1セル ≈ 40dp / 2セル ≈ 110dp / 3セル ≈ 180dp / 4セル ≈ 250dp / 5セル ≈ 320dp / 6セル ≈ 390dp など。
+         minWidth/minHeight = 初期配置時の目安サイズ(2x2)。
+         minResizeWidth/Height = ユーザーがリサイズできる最小サイズ(約1x1)。
+         maxResizeWidth/Height = ユーザーがリサイズできる最大サイズ(約6〜7セル相当)。
+         実際のセル数はデバイスのランチャーグリッドに依存します。
+         resizeModeで縦横どちら方向のリサイズを許すか制御。
+         updatePeriodMillisはOSにより30分未満に短縮されないため保険として設定。
+         実際の毎分更新はHKClockWidgetProviderがAlarmManagerで自前スケジュールする。 -->
