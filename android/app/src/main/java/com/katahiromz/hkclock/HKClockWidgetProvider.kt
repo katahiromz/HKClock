@@ -13,7 +13,6 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
-import android.os.SystemClock
 import android.util.TypedValue
 import android.widget.RemoteViews
 import java.util.Calendar
@@ -32,8 +31,11 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
         // 配置されているすべてのウィジェットを再描画する。
         fun updateAllWidgets(context: Context) {
             val manager = AppWidgetManager.getInstance(context)
+            // AndroidManifest.xml で <receiver> として実際に登録されているのは
+            // Small/Medium/Large の3クラスのみ。基底クラス HKClockWidgetProvider は
+            // 単体では登録されておらず getAppWidgetIds() が常に空配列を返すだけなので、
+            // マニフェストと実装を一致させる意味でここには含めない。
             val classes = listOf(
-                HKClockWidgetProvider::class.java,
                 HKClockWidgetProviderSmall::class.java,
                 HKClockWidgetProviderMedium::class.java,
                 HKClockWidgetProviderLarge::class.java
@@ -93,7 +95,7 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
             val currentMsInMinute = cal.get(Calendar.SECOND) * 1000L + cal.get(Calendar.MILLISECOND)
             val msToNextMinute = 60_000L - currentMsInMinute
             val delay = if (msToNextMinute <= 0L) 60_000L else msToNextMinute
-            val triggerAtElapsed = SystemClock.elapsedRealtime() + delay
+            // 「次の分境界」は壁時計(RTC)上の概念なので、以降すべてRTCベースで統一する。
             val triggerAtRtc = System.currentTimeMillis() + delay
 
             try {
@@ -109,20 +111,17 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
                     alarmManager.setAlarmClock(info, pendingIntent)
                 } else {
                     // 古い端末向けフォールバック
-                    alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtElapsed, pendingIntent)
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent)
                 }
 
-                // 2. バックアップ（90秒後）— 別の requestCode を使う
-                val backupTrigger = SystemClock.elapsedRealtime() + 90_000L
-                val backupIntent = PendingIntent.getBroadcast(
-                    context, 2,   // requestCode = 2
-                    Intent(context, HKClockWidgetProvider::class.java).apply { action = ACTION_TICK },
-                    PendingIntent.FLAG_UPDATE_CURRENT or
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
-                )
+                // 2. バックアップ（90秒後）— 別の requestCode を使う。
+                //    こちらも同じ理由（未登録クラス宛てだと配送されない）でパッケージ指定の
+                //    暗黙的Intentにし、RTC基準でスケジュールする。
+                val backupTrigger = System.currentTimeMillis() + 90_000L
+                val backupIntent = backupTickPendingIntent(context)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     alarmManager.setAndAllowWhileIdle(
-                        AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                        AlarmManager.RTC_WAKEUP,
                         backupTrigger,
                         backupIntent
                     )
@@ -194,13 +193,37 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
             manager.updateAppWidget(appWidgetId, views)
         }
 
+        // ★重要な修正★
+        // 以前は Intent(context, HKClockWidgetProvider::class.java) という「明示的Intent」を
+        // 使っていたが、AndroidManifest.xml に <receiver> として登録されているのは
+        // HKClockWidgetProviderSmall/Medium/Large の3クラスのみで、基底クラスの
+        // HKClockWidgetProvider 自体は登録されていない。そのため、この明示的Intentは
+        // どのレシーバーにもマッチせず、AlarmManagerが正しく起床してもブロードキャストの
+        // 配送自体が（例外もログもなく）失敗し、毎分のTickが実質的に機能していなかった。
+        // これが「ウィジェットの時計が遅延する」最大の原因と考えられる。
+        //
+        // 修正: コンポーネントを指定せず、action + setPackage() による
+        // 「暗黙的だが自パッケージ限定」のIntentにする。これならマニフェストの3レシーバー
+        // （intent-filterでACTION_TICKを宣言している）のいずれにも正しく配送される。
+        // onReceive() はどのサイズのレシーバーが受け取っても updateAllWidgets() を呼んで
+        // 全サイズを更新するので、1つに届けば十分。
         private fun tickPendingIntent(context: Context): PendingIntent {
-            val intent = Intent(context, HKClockWidgetProvider::class.java).apply {
-                action = ACTION_TICK
+            val intent = Intent(ACTION_TICK).apply {
+                setPackage(context.packageName)
             }
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
             return PendingIntent.getBroadcast(context, 0, intent, flags)
+        }
+
+        // forceResumeTick() のバックアップアラーム用（requestCode = 2 で本体と区別する）。
+        private fun backupTickPendingIntent(context: Context): PendingIntent {
+            val intent = Intent(ACTION_TICK).apply {
+                setPackage(context.packageName)
+            }
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+            return PendingIntent.getBroadcast(context, 2, intent, flags)
         }
 
         // Android 12(S)以降で「正確なアラーム」を実際に発行できるかどうか。
@@ -230,37 +253,47 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
             // 次の分境界までのミリ秒
             val msToNextMinute = 60_000L - currentMsInMinute
             val delay = if (msToNextMinute <= 0L) 60_000L else msToNextMinute
-            val triggerAt = SystemClock.elapsedRealtime() + delay
+            // 「次の分境界」は壁時計(RTC)上の概念。ELAPSED_REALTIME（起動からの経過時間）を
+            // 使うと、NTPによる自動時刻補正のようにACTION_TIME_CHANGEDを伴わない
+            // 微小な時刻ズレが積み重なった際にRTCとの間で誤差が生じ得るため、
+            // 文字盤の描画(ClockFaceRenderer)と同じくRTCベースに統一する。
+            val triggerAtRtc = System.currentTimeMillis() + delay
             val pendingIntent = tickPendingIntent(context)
 
             try {
                 when {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && canScheduleExact(context) -> {
                         alarmManager.setExactAndAllowWhileIdle(
-                            AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
+                            AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent
                         )
                     }
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
                         alarmManager.setAndAllowWhileIdle(
-                            AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent
+                            AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent
                         )
                     }
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT -> {
-                        alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                        alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent)
                     }
                     else -> {
-                        alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                        alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent)
                     }
                 }
             } catch (e: SecurityException) {
                 // フォールバック
-                alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtRtc, pendingIntent)
             }
+
+            // 通常のTickチェーンに復帰できたので、forceResumeTick()が仕込んだ
+            // 90秒後のバックアップアラームが残っていれば、無駄な余分な起床を避けるため
+            // ここでキャンセルしておく（存在しなければ何もしない）。
+            alarmManager.cancel(backupTickPendingIntent(context))
         }
 
         fun cancelTick(context: Context) {
             val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             alarmManager.cancel(tickPendingIntent(context))
+            alarmManager.cancel(backupTickPendingIntent(context))
         }
     }
 
