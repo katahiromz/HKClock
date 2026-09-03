@@ -16,9 +16,9 @@
     <string name="progress_bar">プログレス バー</string>
     <string name="now_starting">HK時計を起動中...</string>
     <string name="needs_ignore_battery_optimization">この時計ウィジェットが裏で正確に動き続けるために、バッテリー最適化の対象から除外することをおすすめします。次の画面で「許可」をタップしてください。</string>
-    <string name="widget_size_small">HK Clock (小)</string>
-    <string name="widget_size_medium">HK Clock (中)</string>
-    <string name="widget_size_large">HK Clock (大)</string>
+    <string name="widget_size_small">1. HK Clock (小)</string>
+    <string name="widget_size_medium">2. HK Clock (中)</string>
+    <string name="widget_size_large">3. HK Clock (大)</string>
 
     <!-- URLs -->
     <string name="url">https://appassets.androidplatform.net/hkclock/index.html</string>
