@@ -22,6 +22,15 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
     companion object {
         private const val ACTION_TICK = "com.katahiromz.hkclock.ACTION_WIDGET_TICK"
 
+        // 1辺あたりのBitmap最大ピクセル数。
+        // hk_clock_widget_info_*.xml は maxResizeWidth/Height="1000dp" まで
+        // リサイズを許可しているため、下限(coerceAtLeast)しか設けていないと
+        // 高密度端末で数百MB級のBitmapを毎分生成することになり、
+        // OutOfMemoryErrorやレンダリング遅延、最悪の場合はonReceive()の
+        // タイムアウト（Tickチェーン停止）を招く。720pxもあれば
+        // ホーム画面ウィジェットとして十分な画質なので上限としてクランプする。
+        private const val MAX_BITMAP_DIMENSION_PX = 720
+
         private fun dp2px(context: Context, dp: Float): Int {
             return TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, dp, context.resources.displayMetrics
@@ -175,8 +184,9 @@ open class HKClockWidgetProvider : AppWidgetProvider() {
             }
 
             val scale = 2
-            val w = (dp2px(context, widthDp.toFloat()) * scale).coerceAtLeast(64)
-            val h = (dp2px(context, heightDp.toFloat()) * scale).coerceAtLeast(64)
+            // 下限だけでなく上限もクランプする（理由は MAX_BITMAP_DIMENSION_PX のコメント参照）。
+            val w = (dp2px(context, widthDp.toFloat()) * scale).coerceIn(64, MAX_BITMAP_DIMENSION_PX)
+            val h = (dp2px(context, heightDp.toFloat()) * scale).coerceIn(64, MAX_BITMAP_DIMENSION_PX)
             val bitmap = ClockFaceRenderer.render(w, h)
 
             val views = RemoteViews(context.packageName, R.layout.widget_hk_clock)
