@@ -23,6 +23,7 @@
     </queries>
 
     <application
+        android:name=".HKClockApplication"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
